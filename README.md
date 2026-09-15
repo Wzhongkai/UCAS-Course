@@ -17,7 +17,7 @@
 需要 Node.js 20.9 或更新版本。建议在 Ubuntu/WSL 终端中运行：
 
 ```bash
-cd /mnt/d/UCAS-Course
+cd UCAS-Course
 npm install
 test -f .env.local || cp .env.local.example .env.local
 node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
@@ -67,6 +67,8 @@ https://source.cskaoyan.cn/course
 ```
 
 更新应用可执行 `bash deploy/start-app.sh`。首次启用域名和 HTTPS 需要管理员执行 `sudo bash deploy/install-nginx.sh`。
+
+部署后可执行 `bash deploy/verify-app.sh`，在不输出访问密钥的情况下检查访问验证、首页、后台进程和开机任务。
 
 服务器部署时应启用 HTTPS，妥善保护访问密钥和加密密钥。服务器关机、进程退出、断网或 UCAS 接口改变时，无法保证自动签到成功。可在网页状态和日志中核查结果。
 
