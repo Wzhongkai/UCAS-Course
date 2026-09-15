@@ -19,7 +19,7 @@ payload="$(node -e 'process.stdout.write(JSON.stringify({ key: process.env.UCAS_
 login_code="$(curl -sS -o /dev/null -w '%{http_code}' \
   -c "$cookie_file" \
   -H 'Content-Type: application/json' \
-  -H 'Origin: http://127.0.0.1:3100' \
+  -H 'Origin: http://127.0.0.1:3110' \
   --data-binary "$payload" \
   "$base_url/api/access")"
 [[ "$login_code" == "200" ]]
