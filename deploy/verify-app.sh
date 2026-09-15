@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-env_file="/home/print/.config/ucas-course.env"
-base_url="http://127.0.0.1:3100/course"
+env_file="/etc/ucas-course.env"
+base_url="http://127.0.0.1:3110/course"
 
 set -a
 source "$env_file"
@@ -27,8 +27,8 @@ login_code="$(curl -sS -o /dev/null -w '%{http_code}' \
 home_code="$(curl -sS -o "$response_file" -w '%{http_code}' -b "$cookie_file" "$base_url")"
 [[ "$home_code" == "200" ]]
 grep -q 'UCAS Course' "$response_file"
-pgrep -f '/src/worker-multi.mjs|src/worker-multi.mjs' >/dev/null
-crontab -l 2>/dev/null | grep -qF '# UCAS Course'
+systemctl is-active --quiet ucas-course.service
+systemctl is-enabled --quiet ucas-course.service
 
-printf 'access_redirect=%s login=%s home=%s worker=running reboot=enabled\n' \
+printf 'access_redirect=%s login=%s home=%s service=running reboot=enabled\n' \
   "$redirect_code" "$login_code" "$home_code"

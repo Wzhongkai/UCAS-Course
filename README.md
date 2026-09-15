@@ -46,27 +46,27 @@ UCAS 凭据不会写入 `.env.local`；网页提交后使用 AES-256-GCM 加密�
 ```bash
 APP_BASE_PATH=/course npm ci
 APP_BASE_PATH=/course npm run build
-APP_BASE_PATH=/course APP_HOST=127.0.0.1 APP_PORT=3100 npm start
+APP_BASE_PATH=/course APP_HOST=127.0.0.1 APP_PORT=3110 npm start
 ```
 
-项目内置 `deploy/start-app.sh`。它使用服务器现有的 Node.js 构建应用，配置用户级开机任务，并通过守护循环在网页或后台进程异常退出后自动拉起；同时提供 `source.cskaoyan.cn` 的 Nginx 配置和安装脚本。部署后的访问地址为：
+项目内置 `deploy/start-app.sh`。它使用服务器的 Node.js 24 构建应用，并安装会自动重启、随服务器启动的 systemd 服务；同时提供向现有 `source.cskaoyan.cn` HTTPS 站点添加 `/course` 的 Nginx 配置和安装脚本。部署后的访问地址为：
 
 ```text
 https://source.cskaoyan.cn/course
 ```
 
-默认只监听 `127.0.0.1:3100`，由 Nginx 对外提供 `/course`。请确保只有一个应用实例负责调度，并将自动签到数据持久化；可用 `AUTO_SIGN_DATA_DIR` 指定数据目录。
+默认只监听 `127.0.0.1:3110`，避免与服务器已有的旧课程工具冲突，由 Nginx 对外提供 `/course`。请确保只有一个应用实例负责调度，并将自动签到数据持久化；可用 `AUTO_SIGN_DATA_DIR` 指定数据目录。
 
 当前服务器的部署约定：
 
 ```text
-项目目录：/home/print/apps/UCAS-Course
-私密配置：/home/print/.config/ucas-course.env
-持久数据：/home/print/.local/share/ucas-course
-进程日志：/home/print/.local/share/ucas-course/app.log
+项目目录：/srv/ucas-course
+私密配置：/etc/ucas-course.env
+持久数据：/var/lib/ucas-course
+服务名称：ucas-course.service
 ```
 
-更新应用可执行 `bash deploy/start-app.sh`。首次启用域名和 HTTPS 需要管理员执行 `sudo bash deploy/install-nginx.sh`。
+更新应用可依次执行 `bash deploy/start-app.sh` 和 `bash deploy/install-nginx.sh`。服务器已经持有 `source.cskaoyan.cn` 的有效 HTTPS 证书，安装脚本只会为现有站点增加 `/course` 转发，不会重新申请证书。
 
 部署后可执行 `bash deploy/verify-app.sh`，在不输出访问密钥的情况下检查访问验证、首页、后台进程和开机任务。
 
