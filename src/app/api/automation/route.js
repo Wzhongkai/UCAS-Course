@@ -36,7 +36,8 @@ export async function POST(request) {
       accountId: body?.accountId,
       enabled: body?.enabled,
       username: body?.username,
-      password: body?.password
+      password: body?.password,
+      timing: body?.timing
     });
     return NextResponse.json({ success: true, settings: await readPublicSettings() });
   } catch (error) {

@@ -7,6 +7,12 @@ export const dataDirectory = resolve(/*turbopackIgnore: true*/ process.env.AUTO_
 const settingsFile = resolve(dataDirectory, "automation.json");
 const statusFile = resolve(dataDirectory, "status.json");
 const eventsFile = resolve(dataDirectory, "events.json");
+const DEFAULT_SIGN_TIMING = Object.freeze({
+  mode: "fixed",
+  fixedMinutes: 10,
+  minMinutes: 10,
+  maxMinutes: 20
+});
 
 export function encryptionReady() {
   return /^[a-f\d]{64}$/i.test(process.env.AUTO_SIGN_SECRET ?? "");
@@ -65,7 +71,7 @@ async function writeJson(file, value) {
 export async function readAutomationSettings() {
   const raw = await readRawSettings();
   return {
-    version: 2,
+    version: 3,
     updatedAt: raw.updatedAt,
     accounts: raw.accounts.map((account) => ({
       ...account,
@@ -75,22 +81,51 @@ export async function readAutomationSettings() {
 }
 
 async function readRawSettings() {
-  const raw = await readJson(settingsFile, { version: 2, accounts: [], updatedAt: null });
-  if (raw.version === 2 && Array.isArray(raw.accounts)) return raw;
+  const raw = await readJson(settingsFile, { version: 3, accounts: [], updatedAt: null });
+  if ((raw.version === 2 || raw.version === 3) && Array.isArray(raw.accounts)) {
+    return {
+      version: 3,
+      updatedAt: raw.updatedAt,
+      accounts: raw.accounts.map((account) => ({
+        ...account,
+        timing: normalizeSignTiming(account.timing)
+      }))
+    };
+  }
   if (raw.version === 1) {
     return {
-      version: 2,
+      version: 3,
       updatedAt: raw.updatedAt,
       accounts: raw.credentials ? [{
         id: "legacy",
         enabled: Boolean(raw.enabled),
         credentials: raw.credentials,
+        timing: { ...DEFAULT_SIGN_TIMING },
         updatedAt: raw.updatedAt,
         refreshRequestedAt: raw.refreshRequestedAt
       }] : []
     };
   }
   throw new Error("自动签到配置格式无效");
+}
+
+export function normalizeSignTiming(value, strict = false) {
+  const inRange = (number) => Number.isInteger(number) && number >= 1 && number <= 120;
+  if (value?.mode === "fixed") {
+    const fixedMinutes = Number(value.fixedMinutes);
+    if (inRange(fixedMinutes)) {
+      return { ...DEFAULT_SIGN_TIMING, mode: "fixed", fixedMinutes };
+    }
+  }
+  if (value?.mode === "random") {
+    const minMinutes = Number(value.minMinutes);
+    const maxMinutes = Number(value.maxMinutes);
+    if (inRange(minMinutes) && inRange(maxMinutes) && minMinutes <= maxMinutes) {
+      return { ...DEFAULT_SIGN_TIMING, mode: "random", minMinutes, maxMinutes };
+    }
+  }
+  if (strict) throw new Error("签到时间配置无效，请填写 1 到 120 分钟的有效范围");
+  return { ...DEFAULT_SIGN_TIMING };
 }
 
 function validateCredentials(username, password) {
@@ -103,7 +138,7 @@ function validateCredentials(username, password) {
   return username.trim();
 }
 
-export async function updateAutomationSettings({ action, accountId, username, password, enabled }) {
+export async function updateAutomationSettings({ action, accountId, username, password, enabled, timing }) {
   const current = await readRawSettings();
   const accounts = current.accounts.map((account) => ({ ...account }));
   const index = accounts.findIndex((account) => account.id === accountId);
@@ -119,6 +154,7 @@ export async function updateAutomationSettings({ action, accountId, username, pa
       id: randomBytes(12).toString("hex"),
       enabled: true,
       credentials: encryptCredentials(cleanUsername, password),
+      timing: { ...DEFAULT_SIGN_TIMING },
       updatedAt: now,
       refreshRequestedAt: null
     });
@@ -138,11 +174,15 @@ export async function updateAutomationSettings({ action, accountId, username, pa
     if (index < 0) throw new Error("账号不存在");
     if (!accounts[index].enabled) throw new Error("请先启用该账号");
     accounts[index].refreshRequestedAt = now;
+  } else if (action === "timing") {
+    if (index < 0) throw new Error("账号不存在");
+    accounts[index].timing = normalizeSignTiming(timing, true);
+    accounts[index].updatedAt = now;
   } else {
     throw new Error("未知操作");
   }
 
-  const next = { version: 2, accounts, updatedAt: now };
+  const next = { version: 3, accounts, updatedAt: now };
   await writeJson(settingsFile, next);
   return next;
 }
@@ -155,6 +195,7 @@ export async function readPublicSettings() {
       return {
         id: account.id,
         enabled: account.enabled,
+        timing: normalizeSignTiming(account.timing),
         username,
         usernameHint: `${username.slice(0, 3)}***${username.slice(-3)}`
       };
