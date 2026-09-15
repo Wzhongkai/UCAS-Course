@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { groupCourses, parseCourseTime, shanghaiDate, signTargetForAttempt, signWindow, timeAtSix } from "../src/schedule.mjs";
+import { groupCourses, parseCourseTime, scheduleOutcome, shanghaiDate, signTargetForAttempt, signWindow, timeAtSix } from "../src/schedule.mjs";
 
 const date = "20260914";
 const course = (id, start, end, name = "高等数学", teacher = "张老师") => ({
@@ -60,6 +60,24 @@ test("准备、开始尝试和停止时间相对第一节课计算", () => {
     attemptAt: Date.parse("2026-09-14T07:50:00+08:00"),
     stopAt: Date.parse("2026-09-14T09:40:00+08:00")
   });
+});
+
+test("每个账号可以使用固定或稳定的随机提前时间", () => {
+  const [group] = groupCourses([course("1234567", "08:00:00", "09:40:00")], date);
+  const fixed = signWindow(group, { mode: "fixed", fixedMinutes: 15 }, "account-a");
+  assert.equal(fixed.attemptAt, Date.parse("2026-09-14T07:45:00+08:00"));
+
+  const timing = { mode: "random", minMinutes: 10, maxMinutes: 20 };
+  const random = signWindow(group, timing, "account-a");
+  const repeated = signWindow(group, timing, "account-a");
+  assert.equal(random.attemptAt, repeated.attemptAt);
+  assert.ok(random.attemptAt >= Date.parse("2026-09-14T07:40:00+08:00"));
+  assert.ok(random.attemptAt <= Date.parse("2026-09-14T07:50:00+08:00"));
+});
+
+test("成功获取空课表时明确标记为今日无课", () => {
+  assert.deepEqual(scheduleOutcome([], date), { state: "no_courses", groups: [] });
+  assert.equal(scheduleOutcome([course("1234567", "08:00:00", "09:40:00")], date).state, "ready");
 });
 
 test("无效或重复的课程记录不会产生签到任务", () => {

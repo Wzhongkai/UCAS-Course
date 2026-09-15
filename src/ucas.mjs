@@ -78,10 +78,19 @@ export class UcasClient {
       method: "GET",
       headers: { sessionId: this.sessionId, "User-Agent": API_UA }
     });
+    const hasErrorMessage = [data?.ERRMSG, data?.msg, data?.message]
+      .some((value) => typeof value === "string" && value.trim());
+    const emptyResult = data?.result == null || (Array.isArray(data.result) && data.result.length === 0);
+    if (data?.STATUS === "2" && emptyResult && !hasErrorMessage) {
+      return [];
+    }
     if (data?.STATUS !== "0") {
       throw new Error("UCAS 课表查询失败");
     }
-    return Array.isArray(data.result) ? data.result : [];
+    if (!Array.isArray(data.result)) {
+      throw new Error("UCAS 课表响应格式错误");
+    }
+    return data.result;
   }
 
   async sign(courseSchedId, timestamp) {

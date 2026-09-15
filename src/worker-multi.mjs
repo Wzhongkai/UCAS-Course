@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { readAutomationSettings, writeWorkerStatus, readWorkerEvents, writeWorkerEvents, encryptionReady, dataDirectory } from "./automation/store.mjs";
 import { accessReady } from "./automation/auth.mjs";
 import { UcasClient } from "./ucas.mjs";
-import { groupCourses, shanghaiDate, signTargetForAttempt, signWindow, timeAtSix } from "./schedule.mjs";
+import { scheduleOutcome, shanghaiDate, signTargetForAttempt, signWindow, timeAtSix } from "./schedule.mjs";
 
 const completedFile = resolve(dataDirectory, "completed.json");
 const logFile = resolve(dataDirectory, "auto-sign.log");
@@ -91,9 +91,11 @@ function createState(account) {
     version: account.updatedAt,
     refreshVersion: account.refreshRequestedAt,
     enabled: Boolean(account.enabled),
+    timing: account.timing,
     client: account.enabled ? new UcasClient(account.credentials) : null,
     activeDate: "",
     groups: [],
+    scheduleState: "waiting",
     nextScheduleAt: 0,
     lastScheduleAt: 0,
     lastError: "",
@@ -133,6 +135,7 @@ async function syncSettings(now) {
         if (account.refreshRequestedAt) {
           current.forceRefresh = true;
           current.nextScheduleAt = 0;
+          current.scheduleState = "waiting";
         }
       }
     }
@@ -148,14 +151,18 @@ async function syncSettings(now) {
 async function refreshSchedule(state, now) {
   try {
     const courses = await state.client.schedule(state.activeDate);
-    state.groups = groupCourses(courses, state.activeDate);
+    const outcome = scheduleOutcome(courses, state.activeDate);
+    state.groups = outcome.groups;
     state.lastScheduleAt = Date.now();
-    state.nextScheduleAt = Date.now() < timeAtSix(state.activeDate)
-      ? timeAtSix(state.activeDate)
-      : timeAtSix(shanghaiDate(Date.now() + 24 * 60 * 60_000));
+    state.nextScheduleAt = timeAtSix(shanghaiDate(now + 24 * 60 * 60_000));
+    state.scheduleState = outcome.state;
     state.lastError = "";
     state.allDoneLogged = false;
-    log(`${state.usernameHint} · ${state.activeDate} 课表已获取：${courses.length} 条，合并为 ${state.groups.length} 组。`);
+    if (courses.length === 0) {
+      log(`${state.usernameHint} · ${state.activeDate}：今日无课，本日不再查询课表。`);
+    } else {
+      log(`${state.usernameHint} · ${state.activeDate} 课表已获取：${courses.length} 条，合并为 ${state.groups.length} 组。`);
+    }
     for (const group of state.groups) {
       if (group.signTargets.some((course) => course.signStatus === "1")) {
         await markCompleted(state, group, "同一时间段的课表入口显示已签到");
@@ -164,6 +171,7 @@ async function refreshSchedule(state, now) {
   } catch (error) {
     state.client.sessionId = "";
     state.nextScheduleAt = now + 5 * 60_000;
+    state.scheduleState = "error";
     state.lastError = safeText(error instanceof Error ? error.message : "课表查询失败");
     log(`${state.usernameHint}：课表查询失败：${state.lastError}；5 分钟后重试。`);
   }
@@ -218,6 +226,7 @@ async function tickAccount(state, now) {
   if (today !== state.activeDate) {
     state.activeDate = today;
     state.groups = [];
+    state.scheduleState = "waiting";
     state.attempts.clear();
     state.nextAttemptAt.clear();
     state.messages.clear();
@@ -239,7 +248,7 @@ async function tickAccount(state, now) {
   }
   for (const group of state.groups) {
     if (completed.has(completionKey(state, group))) continue;
-    const window = signWindow(group);
+    const window = signWindow(group, state.timing, state.id);
     const currentTime = Date.now();
     if (currentTime > window.stopAt) {
       if (!state.expired.has(group.key) && currentTime >= window.prepareAt) {
@@ -256,7 +265,7 @@ async function tickAccount(state, now) {
 
 function publicPlan(state, now) {
   return state.groups.map((group) => {
-    const window = signWindow(group);
+    const window = signWindow(group, state.timing, state.id);
     let status = "待开始";
     if (completed.has(completionKey(state, group))) status = "已签到";
     else if (now > window.stopAt) status = "未成功，已停止";
@@ -288,6 +297,7 @@ async function writeStatus(now) {
       usernameHint: state.usernameHint,
       enabled: state.enabled,
       date: state.activeDate,
+      scheduleState: state.scheduleState,
       lastScheduleAt: state.lastScheduleAt || null,
       nextScheduleAt: Number.isFinite(state.nextScheduleAt) ? state.nextScheduleAt : null,
       lastError: state.lastError,

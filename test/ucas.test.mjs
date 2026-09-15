@@ -35,3 +35,29 @@ test("按原项目格式发送登录、课表、时间戳和签到请求", async
   assert.equal(new URL(calls[3].url).searchParams.get("id"), "user-1");
   assert.equal(calls[3].options.headers.sessionId, "session-1");
 });
+
+test("UCAS 课表状态 2 且没有结果时识别为当天无课", async () => {
+  const responses = [
+    { STATUS: "0", result: { id: "user-1", sessionId: "session-1" } },
+    { STATUS: "2" }
+  ];
+  const client = new UcasClient({
+    username: "20260001",
+    password: "secret",
+    fetchImpl: async () => Response.json(responses.shift())
+  });
+  assert.deepEqual(await client.schedule("20260915"), []);
+});
+
+test("成功状态但课表结果格式异常时仍视为查询失败", async () => {
+  const responses = [
+    { STATUS: "0", result: { id: "user-1", sessionId: "session-1" } },
+    { STATUS: "0" }
+  ];
+  const client = new UcasClient({
+    username: "20260001",
+    password: "secret",
+    fetchImpl: async () => Response.json(responses.shift())
+  });
+  await assert.rejects(client.schedule("20260915"), /响应格式错误/);
+});

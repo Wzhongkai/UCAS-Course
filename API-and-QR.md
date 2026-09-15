@@ -250,7 +250,9 @@ const imageDataUrl = await QRCode.toDataURL(signUrl, {
 | `POST /api/automation` | 提交 `{ "action": "add", "username": "<学号>", "password": "<密码>" }` 添加并启用账号，返回新账号的 `id` |
 | `POST /api/automation` | 提交 `{ "action": "toggle", "accountId": "<账号ID>", "enabled": false }` 暂停或启用指定账号 |
 | `POST /api/automation` | 提交 `{ "action": "password", "accountId": "<账号ID>", "password": "<新密码>" }` 更新密码 |
+| `POST /api/automation` | 提交 `{ "action": "timing", "accountId": "<账号ID>", "timing": { "mode": "fixed", "fixedMinutes": 10 } }` 设置固定提前时间 |
+| `POST /api/automation` | 提交 `{ "action": "timing", "accountId": "<账号ID>", "timing": { "mode": "random", "minMinutes": 10, "maxMinutes": 20 } }` 设置随机提前区间 |
 | `POST /api/automation` | 提交 `{ "action": "refresh", "accountId": "<账号ID>" }` 重新查询指定账号课表 |
 | `POST /api/automation` | 提交 `{ "action": "remove", "accountId": "<账号ID>" }` 移除账号并停止其后续任务 |
 
-自动签到后台进程不通过项目的 `/api/course-uuid/query`、`/api/course-uuid/sign` 代理，而是复用第二节列出的 UCAS 登录、课表、时间戳、签到请求格式，直接在服务器端发送。每个账号独立使用自己的登录会话。每天 06:00 查询当天课表，课前 10 分钟开始每隔至少 10 秒尝试签到；某账号所有课程都成功后停止该账号当天的尝试，第二天继续自动查询。同名且起止时间完全相同的多条课表记录会合并为一个目标，后台轮换其 `courseSchedId`，任意一个返回成功即停止整个目标；起止时间有任一不同就作为独立目标。[后台代码](src/worker-multi.mjs) · [接口代码](src/app/api/automation/route.js)
+自动签到后台进程不通过项目的 `/api/course-uuid/query`、`/api/course-uuid/sign` 代理，而是复用第二节列出的 UCAS 登录、课表、时间戳、签到请求格式，直接在服务器端发送。每个账号独立使用自己的登录会话和签到时间配置；固定模式按指定提前分钟数开始，随机模式则为每个账号和课程生成稳定的区间内时间点。到达计划时间后每隔至少 10 秒尝试签到。实测课表接口会用 HTTP 200、`STATUS="2"` 且不返回 `result` 表示当天无课；该响应以及成功的空数组都会标记为“今日无课”，直接等待次日 06:00。登录、网络、响应格式或其他业务状态错误才会在 5 分钟后重试。某账号所有课程都成功后停止该账号当天的尝试，第二天继续自动查询。同名且起止时间完全相同的多条课表记录会合并为一个目标，后台轮换其 `courseSchedId`，任意一个返回成功即停止整个目标；起止时间有任一不同就作为独立目标。[后台代码](src/worker-multi.mjs) · [接口代码](src/app/api/automation/route.js)

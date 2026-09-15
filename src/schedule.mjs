@@ -81,10 +81,42 @@ export function groupCourses(courses, date) {
   });
 }
 
-export function signWindow(group) {
+export function scheduleOutcome(courses, date) {
+  const items = Array.isArray(courses) ? courses : [];
   return {
-    prepareAt: group.start - 30 * 60_000,
-    attemptAt: group.start - 10 * 60_000,
+    state: items.length === 0 ? "no_courses" : "ready",
+    groups: groupCourses(items, date)
+  };
+}
+
+function stableFraction(value) {
+  let hash = 2166136261;
+  for (const character of String(value)) {
+    hash ^= character.codePointAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) / 0x100000000;
+}
+
+function advanceMilliseconds(timing, seed) {
+  if (timing?.mode === "random") {
+    const min = Number(timing.minMinutes);
+    const max = Number(timing.maxMinutes);
+    if (Number.isFinite(min) && Number.isFinite(max) && min >= 1 && max >= min) {
+      const minMs = min * 60_000;
+      const rangeMs = (max - min) * 60_000;
+      return minMs + Math.floor(stableFraction(seed) * (rangeMs + 1));
+    }
+  }
+  const fixed = Number(timing?.fixedMinutes);
+  return (Number.isFinite(fixed) && fixed >= 1 ? fixed : 10) * 60_000;
+}
+
+export function signWindow(group, timing, accountSeed = "") {
+  const attemptAt = group.start - advanceMilliseconds(timing, `${accountSeed}:${group.key}`);
+  return {
+    prepareAt: Math.min(group.start - 30 * 60_000, attemptAt),
+    attemptAt,
     stopAt: group.firstEnd
   };
 }

@@ -20,11 +20,27 @@ test("多账号配置加密保存，管理状态不泄露密码并兼容旧账�
     const settings = await store.readAutomationSettings();
     assert.equal(settings.accounts[0].credentials.username, "20260001");
     assert.equal(settings.accounts[0].credentials.password, "test-secret");
+    assert.deepEqual(settings.accounts[0].timing, {
+      mode: "fixed", fixedMinutes: 10, minMinutes: 10, maxMinutes: 20
+    });
     assert.ok(settings.accounts[0].refreshRequestedAt);
     const publicSettings = await store.readPublicSettings();
     assert.equal(publicSettings.accounts.length, 1);
     assert.equal(publicSettings.accounts[0].username, "20260001");
     assert.equal(JSON.stringify(publicSettings).includes("test-secret"), false);
+    await store.updateAutomationSettings({
+      action: "timing",
+      accountId: firstId,
+      timing: { mode: "random", minMinutes: 12, maxMinutes: 24 }
+    });
+    assert.deepEqual((await store.readPublicSettings()).accounts[0].timing, {
+      mode: "random", fixedMinutes: 10, minMinutes: 12, maxMinutes: 24
+    });
+    await assert.rejects(store.updateAutomationSettings({
+      action: "timing",
+      accountId: firstId,
+      timing: { mode: "random", minMinutes: 30, maxMinutes: 10 }
+    }), /签到时间配置无效/);
     await assert.rejects(store.updateAutomationSettings({ action: "add", username: "20260001", password: "different" }), /已添加/);
     await store.updateAutomationSettings({ action: "add", username: "20260002", password: "another-secret" });
     assert.equal((await store.readPublicSettings()).accounts.length, 2);
@@ -42,6 +58,13 @@ test("多账号配置加密保存，管理状态不泄露密码并兼容旧账�
     const cleared = await store.readPublicSettings();
     assert.equal(cleared.accounts.length, 1);
     const second = JSON.parse(await readFile(join(directory, "automation.json"), "utf8")).accounts[0];
+    delete second.timing;
+    await writeFile(join(directory, "automation.json"), JSON.stringify({
+      version: 2, accounts: [second], updatedAt: new Date().toISOString()
+    }));
+    const versionTwo = await store.readAutomationSettings();
+    assert.equal(versionTwo.version, 3);
+    assert.equal(versionTwo.accounts[0].timing.fixedMinutes, 10);
     await writeFile(join(directory, "automation.json"), JSON.stringify({
       version: 1, enabled: true, credentials: second.credentials,
       updatedAt: new Date().toISOString(), refreshRequestedAt: null
@@ -49,6 +72,7 @@ test("多账号配置加密保存，管理状态不泄露密码并兼容旧账�
     const legacy = await store.readAutomationSettings();
     assert.equal(legacy.accounts[0].id, "legacy");
     assert.equal(legacy.accounts[0].credentials.username, "20260002");
+    assert.equal(legacy.accounts[0].timing.fixedMinutes, 10);
     await store.updateAutomationSettings({ action: "add", username: "20260003", password: "third-secret" });
     assert.equal((await store.readPublicSettings()).accounts.length, 2);
   } finally {

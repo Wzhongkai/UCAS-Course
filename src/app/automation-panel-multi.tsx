@@ -3,7 +3,13 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { appUrl } from "../app-path";
 
-type Account = { id: string; username: string; usernameHint: string; enabled: boolean };
+type SignTiming = {
+  mode: "fixed" | "random";
+  fixedMinutes: number;
+  minMinutes: number;
+  maxMinutes: number;
+};
+type Account = { id: string; username: string; usernameHint: string; enabled: boolean; timing: SignTiming };
 type PlanItem = {
   key: string; courseName: string; teacherName: string; courseId: string; courseIds: string[];
   start: number; attemptAt: number; state: string;
@@ -11,7 +17,8 @@ type PlanItem = {
 };
 type AccountStatus = {
   id: string; enabled: boolean; date: string; lastScheduleAt: number | null;
-  nextScheduleAt: number | null; lastError: string; plan: PlanItem[];
+  nextScheduleAt: number | null; lastError: string;
+  scheduleState: "waiting" | "ready" | "no_courses" | "error"; plan: PlanItem[];
 };
 type WorkerStatus = { updatedAt: string; lastError: string; accounts: AccountStatus[] };
 type AutomationResponse = {
@@ -34,6 +41,7 @@ export default function AutomationPanelMulti() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [newPasswords, setNewPasswords] = useState<Record<string, string>>({});
+  const [timingDrafts, setTimingDrafts] = useState<Record<string, SignTiming>>({});
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [worker, setWorker] = useState<WorkerStatus | null>(null);
   const [events, setEvents] = useState<{ at: string; message: string }[]>([]);
@@ -42,8 +50,8 @@ export default function AutomationPanelMulti() {
   const [clockNow, setClockNow] = useState(0);
   const enabledAccounts = accounts.filter((account) => account.enabled);
   const allDoneToday = enabledAccounts.length > 0 && enabledAccounts.every((account) => {
-    const plan = worker?.accounts?.find((item) => item.id === account.id)?.plan;
-    return plan && plan.length > 0 && plan.every((item) => item.state === "已签到");
+    const status = worker?.accounts?.find((item) => item.id === account.id);
+    return status?.scheduleState === "no_courses" || Boolean(status?.plan?.length && status.plan.every((item) => item.state === "已签到"));
   });
 
   const load = useCallback(async () => {
@@ -58,7 +66,12 @@ export default function AutomationPanelMulti() {
       }
       if (!response.ok) { setMessage(data.message ?? "读取自动签到状态失败"); return; }
       setAccess("ready");
-      setAccounts(data.settings.accounts ?? []);
+      const nextAccounts = data.settings.accounts ?? [];
+      setAccounts(nextAccounts);
+      setTimingDrafts((current) => Object.fromEntries(nextAccounts.map((account) => [
+        account.id,
+        current[account.id] ?? account.timing
+      ])));
       setWorker(data.worker);
       setEvents(data.events ?? []);
     } catch {
@@ -108,6 +121,22 @@ export default function AutomationPanelMulti() {
     if (saved) setNewPasswords((current) => ({ ...current, [account.id]: "" }));
   }
 
+  function updateTiming(account: Account, patch: Partial<SignTiming>) {
+    setTimingDrafts((current) => ({
+      ...current,
+      [account.id]: { ...(current[account.id] ?? account.timing), ...patch }
+    }));
+  }
+
+  async function onSaveTiming(account: Account) {
+    const timing = timingDrafts[account.id] ?? account.timing;
+    if (timing.mode === "random" && timing.minMinutes > timing.maxMinutes) {
+      setMessage("随机区间中，最多提前分钟数不能小于最少提前分钟数");
+      return;
+    }
+    await mutate({ action: "timing", accountId: account.id, timing }, `${account.username} 的签到时间已更新。`);
+  }
+
   const online = worker && clockNow - new Date(worker.updatedAt).getTime() < 15_000;
 
   return (
@@ -151,6 +180,43 @@ export default function AutomationPanelMulti() {
               <button type="button" disabled={saving} onClick={() => void onRemove(account)}
                 className="action-btn action-btn--quiet min-h-11 rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-60">移除</button>
             </div>
+            <div className="mt-5 rounded-xl border border-[color:var(--line)] bg-[color:var(--surface-raised)] p-4">
+              <h4 className="font-semibold">签到时间</h4>
+              <p className="mt-1 text-xs leading-5 text-[color:var(--muted)]">每节课单独计算；随机结果对同一账号和课程保持稳定，后台重启不会重新抽取。</p>
+              <label className="mt-3 block text-sm font-semibold">方式
+                <select value={(timingDrafts[account.id] ?? account.timing).mode}
+                  onChange={(event) => updateTiming(account, { mode: event.target.value as SignTiming["mode"] })}
+                  className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5">
+                  <option value="fixed">固定提前</option>
+                  <option value="random">随机区间</option>
+                </select>
+              </label>
+              {(timingDrafts[account.id] ?? account.timing).mode === "fixed" ? (
+                <label className="mt-3 block text-sm font-semibold">提前分钟数
+                  <input type="number" min="1" max="120" step="1"
+                    value={(timingDrafts[account.id] ?? account.timing).fixedMinutes}
+                    onChange={(event) => updateTiming(account, { fixedMinutes: Number(event.target.value) })}
+                    className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5" />
+                </label>
+              ) : (
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <label className="block text-sm font-semibold">最少提前（分钟）
+                    <input type="number" min="1" max="120" step="1"
+                      value={(timingDrafts[account.id] ?? account.timing).minMinutes}
+                      onChange={(event) => updateTiming(account, { minMinutes: Number(event.target.value) })}
+                      className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5" />
+                  </label>
+                  <label className="block text-sm font-semibold">最多提前（分钟）
+                    <input type="number" min="1" max="120" step="1"
+                      value={(timingDrafts[account.id] ?? account.timing).maxMinutes}
+                      onChange={(event) => updateTiming(account, { maxMinutes: Number(event.target.value) })}
+                      className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5" />
+                  </label>
+                </div>
+              )}
+              <button type="button" disabled={saving} onClick={() => void onSaveTiming(account)}
+                className="action-btn action-btn--quiet mt-3 min-h-11 rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-60">保存签到时间</button>
+            </div>
             <label className="mt-4 block text-sm font-semibold">更新密码
               <input type="password" value={newPasswords[account.id] ?? ""} onChange={(event) => setNewPasswords((current) => ({ ...current, [account.id]: event.target.value }))}
                 autoComplete="new-password" className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5" />
@@ -177,7 +243,8 @@ export default function AutomationPanelMulti() {
                 <h3 className="text-lg font-semibold">{account.username} · {account.enabled ? "已启用" : "已暂停"}</h3>
                 {account.enabled ? <p className="mt-1 text-xs leading-5 text-[color:var(--muted)]">上次查询：{formatTime(status?.lastScheduleAt)}；下次查询：{formatTime(status?.nextScheduleAt)}</p> : null}
                 {status?.lastError ? <p className="status-banner status-banner--error mt-3 rounded-xl px-3 py-2 text-sm">{status.lastError}</p> : null}
-                {account.enabled && !status?.plan?.length ? <p className="mt-3 text-sm text-[color:var(--muted)]">暂无课程计划。后台会在 06:00 查询；若已过 06:00，将尽快查询。</p> : null}
+                {account.enabled && status?.scheduleState === "no_courses" ? <p className="status-banner status-banner--success mt-3 rounded-xl px-3 py-2 text-sm">今日无课，今天不再查询课表；下次将在明日 06:00 查询。</p> : null}
+                {account.enabled && status?.scheduleState !== "no_courses" && !status?.plan?.length ? <p className="mt-3 text-sm text-[color:var(--muted)]">尚无课程计划。未查询时会在 06:00 获取；查询失败时每 5 分钟重试。</p> : null}
                 {account.enabled && status?.plan?.map((item) => (
                   <article key={item.key} className="clay-card mt-3 rounded-xl border border-[color:var(--line)] bg-[color:var(--surface-raised)] p-4">
                     <div className="flex flex-wrap items-start justify-between gap-2"><h4 className="font-semibold">{item.courseName || "未命名课程"}</h4><span className="text-sm font-semibold text-[color:var(--green)]">{item.state}</span></div>
