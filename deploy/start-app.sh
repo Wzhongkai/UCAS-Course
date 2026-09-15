@@ -4,25 +4,20 @@ set -euo pipefail
 project_dir="/home/print/apps/UCAS-Course"
 env_file="/home/print/.config/ucas-course.env"
 data_dir="/home/print/.local/share/ucas-course"
-image_name="ucas-course:latest"
-container_name="ucas-course"
+cron_marker="# UCAS Course"
+cron_line="@reboot /bin/bash $project_dir/deploy/launch-app.sh $cron_marker"
 
 test -f "$env_file"
 mkdir -p "$data_dir"
 
-docker build --build-arg APP_BASE_PATH=/course -t "$image_name" "$project_dir"
-docker rm -f "$container_name" >/dev/null 2>&1 || true
-docker run -d \
-  --name "$container_name" \
-  --restart unless-stopped \
-  --env-file "$env_file" \
-  -e NODE_ENV=production \
-  -e APP_BASE_PATH=/course \
-  -e APP_HOST=0.0.0.0 \
-  -e APP_PORT=3100 \
-  -e AUTO_SIGN_DATA_DIR=/data \
-  -p 127.0.0.1:3100:3100 \
-  -v "$data_dir:/data" \
-  "$image_name"
+cd "$project_dir"
+npm ci
+APP_BASE_PATH=/course npm run build
 
-docker ps --filter "name=^/${container_name}$"
+cron_file="$(mktemp)"
+trap 'rm -f "$cron_file"' EXIT
+crontab -l 2>/dev/null | grep -vF "$cron_marker" >"$cron_file" || true
+printf '%s\n' "$cron_line" >>"$cron_file"
+crontab "$cron_file"
+
+bash "$project_dir/deploy/launch-app.sh"
