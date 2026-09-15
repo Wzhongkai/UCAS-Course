@@ -49,7 +49,7 @@ APP_BASE_PATH=/course npm run build
 APP_BASE_PATH=/course APP_HOST=127.0.0.1 APP_PORT=3100 npm start
 ```
 
-项目内置 `Dockerfile` 和 `deploy/start-app.sh`，容器会在退出或服务器重启后自动恢复；同时提供 `source.cskaoyan.cn` 的 Nginx 配置和安装脚本。部署后的访问地址为：
+项目内置 `deploy/start-app.sh`。它使用服务器现有的 Node.js 构建应用，配置用户级开机任务，并通过守护循环在网页或后台进程异常退出后自动拉起；同时提供 `source.cskaoyan.cn` 的 Nginx 配置和安装脚本。部署后的访问地址为：
 
 ```text
 https://source.cskaoyan.cn/course
@@ -63,7 +63,7 @@ https://source.cskaoyan.cn/course
 项目目录：/home/print/apps/UCAS-Course
 私密配置：/home/print/.config/ucas-course.env
 持久数据：/home/print/.local/share/ucas-course
-容器名称：ucas-course
+进程日志：/home/print/.local/share/ucas-course/app.log
 ```
 
 更新应用可执行 `bash deploy/start-app.sh`。首次启用域名和 HTTPS 需要管理员执行 `sudo bash deploy/install-nginx.sh`。
