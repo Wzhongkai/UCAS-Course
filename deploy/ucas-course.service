@@ -1,0 +1,23 @@
+[Unit]
+Description=UCAS Course web app and automatic sign-in worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=/srv/ucas-course
+Environment=NODE_ENV=production
+Environment=APP_BASE_PATH=/course
+Environment=APP_HOST=127.0.0.1
+Environment=APP_PORT=3110
+Environment=AUTO_SIGN_DATA_DIR=/var/lib/ucas-course
+Environment=PATH=/opt/node24-current/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=/etc/ucas-course.env
+ExecStart=/opt/node24-current/bin/node scripts/run.mjs start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
