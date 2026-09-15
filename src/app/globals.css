@@ -1,0 +1,374 @@
+@import "tailwindcss";
+
+:root {
+	--font-noto-sans: "Noto Sans SC", "Microsoft YaHei", "PingFang SC", sans-serif;
+	--font-noto-serif: "Noto Serif SC", "Songti SC", "SimSun", serif;
+	--font-ibm-mono: "IBM Plex Mono", "Consolas", monospace;
+	color-scheme: light;
+	--ink: #24374b;
+	--muted: #5d6f84;
+	--paper: #f1f5fb;
+	--paper-strong: #e3eaf5;
+	--surface: #f8fbff;
+	--surface-raised: #ffffff;
+	--accent: #4f7fc9;
+	--accent-soft: #7ea8e8;
+	--green: #2f7f70;
+	--line: #aec0d8;
+	--line-strong: #7d97bb;
+	--bg-radial-a: #cfdbeb;
+	--bg-radial-b: #d8e3f7;
+	--bg-base-a: #ecf2f9;
+	--bg-base-b: #f7faff;
+	--bg-base-c: #edf3fa;
+	--shadow-soft: rgba(52, 72, 102, 0.2);
+	--grain-opacity: 0.16;
+	--grain-dot-a: rgba(49, 70, 97, 0.12);
+	--grain-dot-b: rgba(103, 142, 202, 0.1);
+	--status-chip-signed-bg: #e5f6f2;
+	--status-chip-signed-border: #76b8a8;
+	--status-chip-signed-text: #165348;
+	--status-chip-unsigned-bg: #eef4ff;
+	--status-chip-unsigned-border: #89a9dd;
+	--status-chip-unsigned-text: #2f4f85;
+	--btn-primary-bg-start: #5e86b3;
+	--btn-primary-bg-end: #4f739d;
+	--btn-primary-border: #3f638f;
+	--btn-primary-text: #f6fbff;
+	--mix-highlight: #ffffff;
+	--btn-primary-shadow: rgba(56, 87, 123, 0.32);
+	--status-neutral-border: var(--line);
+	--status-neutral-bg: var(--surface);
+	--status-neutral-text: var(--muted);
+	--status-success-border: #2d9b7e;
+	--status-success-bg: #ecfcf7;
+	--status-success-text: #0f5d4c;
+	--status-error-border: #c85d57;
+	--status-error-bg: #fff3f1;
+	--status-error-text: #7f2f2b;
+	--status-info-border: #4f84ca;
+	--status-info-bg: #eef5ff;
+	--status-info-text: #234f86;
+}
+
+@theme inline {
+	--color-background: var(--paper);
+	--color-foreground: var(--ink);
+	--font-sans: var(--font-noto-sans);
+	--font-mono: var(--font-ibm-mono);
+	--font-serif: var(--font-noto-serif);
+}
+
+body {
+	color: var(--ink);
+	background-color: var(--bg-base-c);
+	background:
+		radial-gradient(circle at 10% 10%, var(--bg-radial-a) 0%, transparent 38%),
+		radial-gradient(circle at 100% 0%, var(--bg-radial-b) 0%, transparent 34%),
+		linear-gradient(140deg, var(--bg-base-a) 0%, var(--bg-base-b) 36%, var(--bg-base-c) 100%);
+	background-repeat: no-repeat;
+	background-size:
+		100% 100lvh,
+		100% 100lvh,
+		100% 100lvh;
+	background-position:
+		top left,
+		top right,
+		top left;
+	background-attachment: fixed, fixed, fixed;
+	min-height: 100lvh;
+	font-family: var(--font-noto-sans), "Microsoft YaHei", sans-serif;
+}
+
+@media (max-width: 1024px), (hover: none) and (pointer: coarse) {
+	body {
+		background-size:
+			100% 58vh,
+			100% 56vh,
+			100% 100%;
+		background-attachment: scroll, scroll, scroll;
+	}
+}
+
+html,
+body {
+	min-height: 100%;
+}
+
+html {
+	background-color: var(--bg-base-c);
+}
+
+.grain {
+	position: relative;
+}
+
+.grain::after {
+	content: "";
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	contain: paint;
+	opacity: var(--grain-opacity);
+	background-image:
+		radial-gradient(var(--grain-dot-a) 0.6px, transparent 0.6px),
+		radial-gradient(var(--grain-dot-b) 0.6px, transparent 0.6px);
+	background-size:
+		5px 5px,
+		6px 6px;
+	background-position:
+		0 0,
+		2px 2px;
+}
+
+.panel {
+	contain: layout paint;
+	border: 2px solid color-mix(in oklab, var(--line-strong) 56%, var(--line));
+	background: linear-gradient(
+		162deg,
+		color-mix(in oklab, var(--surface-raised) 92%, var(--mix-highlight)) 0%,
+		var(--surface) 100%
+	);
+	box-shadow:
+		0 2px 0 color-mix(in oklab, var(--surface-raised) 88%, var(--mix-highlight)),
+		0 10px 0 color-mix(in oklab, var(--line) 26%, transparent),
+		0 18px 34px var(--shadow-soft);
+}
+
+.clay-card {
+	contain: layout paint;
+	border: 2px solid color-mix(in oklab, var(--line-strong) 54%, var(--line));
+	background: linear-gradient(
+		165deg,
+		color-mix(in oklab, var(--surface-raised) 94%, var(--mix-highlight)) 0%,
+		var(--surface) 100%
+	);
+	box-shadow:
+		0 1px 0 color-mix(in oklab, var(--surface-raised) 86%, var(--mix-highlight)),
+		0 8px 0 color-mix(in oklab, var(--line) 24%, transparent),
+		0 14px 26px var(--shadow-soft);
+}
+
+.focus-ring {
+	outline: none;
+	color: var(--ink);
+	transition:
+		box-shadow 0.22s ease,
+		border-color 0.22s ease;
+}
+
+.focus-ring:focus-visible {
+	box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent-soft) 35%, transparent);
+	border-color: color-mix(in oklab, var(--accent) 72%, var(--line-strong));
+}
+
+.input-surface {
+	color-scheme: light;
+	background: color-mix(in oklab, var(--surface) 82%, var(--paper-strong));
+}
+
+input[type="date"].input-surface {
+	color-scheme: light;
+}
+
+input[type="date"].input-surface::-webkit-calendar-picker-indicator {
+	filter: none;
+	opacity: 0.92;
+}
+
+.skip-link {
+	position: absolute;
+	left: 12px;
+	top: 10px;
+	z-index: 50;
+	padding: 0.35rem 0.6rem;
+	border-radius: 0.45rem;
+	border: 1px solid var(--line-strong);
+	background: var(--paper-strong);
+	color: var(--ink);
+	font-size: 0.75rem;
+	font-weight: 600;
+}
+
+.numeric-tabular {
+	font-variant-numeric: tabular-nums;
+}
+
+.action-btn {
+	cursor: pointer;
+	touch-action: manipulation;
+	-webkit-tap-highlight-color: transparent;
+	border-width: 2px;
+	box-shadow:
+		0 1px 0 color-mix(in oklab, var(--surface-raised) 84%, var(--mix-highlight)),
+		0 5px 0 color-mix(in oklab, var(--line) 26%, transparent);
+	transition:
+		background-color 0.2s ease,
+		border-color 0.2s ease,
+		box-shadow 0.2s ease,
+		transform 0.16s ease;
+}
+
+.action-btn:hover {
+	box-shadow:
+		0 1px 0 color-mix(in oklab, var(--surface-raised) 84%, var(--mix-highlight)),
+		0 7px 0 color-mix(in oklab, var(--line-strong) 32%, transparent),
+		0 12px 20px color-mix(in oklab, var(--shadow-soft) 48%, transparent);
+	transform: translateY(-1px);
+}
+
+.action-btn:active {
+	transform: translateY(2px);
+	box-shadow:
+		0 1px 0 color-mix(in oklab, var(--surface-raised) 80%, var(--mix-highlight)),
+		0 2px 0 color-mix(in oklab, var(--line-strong) 30%, transparent),
+		0 8px 14px color-mix(in oklab, var(--shadow-soft) 44%, transparent);
+}
+
+.action-btn:focus-visible {
+	outline: none;
+	box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent-soft) 35%, transparent);
+}
+
+.action-btn:disabled {
+	cursor: not-allowed;
+	opacity: 0.7;
+	transform: none;
+	box-shadow: none;
+}
+
+.action-btn--primary {
+	border-color: var(--btn-primary-border);
+	background: linear-gradient(160deg, var(--btn-primary-bg-start) 0%, var(--btn-primary-bg-end) 100%);
+	color: var(--btn-primary-text);
+	text-shadow: 0 1px 0 color-mix(in oklab, var(--btn-primary-shadow) 60%, transparent);
+}
+
+.action-btn--primary:hover {
+	border-color: color-mix(in oklab, var(--btn-primary-border) 78%, var(--mix-highlight));
+	background: linear-gradient(
+		160deg,
+		color-mix(in oklab, var(--btn-primary-bg-start) 84%, var(--mix-highlight)) 0%,
+		var(--btn-primary-bg-end) 100%
+	);
+}
+
+.course-item {
+	transition:
+		border-color 0.2s ease,
+		box-shadow 0.2s ease,
+		background-color 0.2s ease;
+}
+
+.course-item--selected {
+	border-color: color-mix(in oklab, var(--accent) 45%, var(--line-strong));
+	box-shadow:
+		0 1px 0 color-mix(in oklab, var(--surface-raised) 86%, var(--mix-highlight)),
+		0 9px 0 color-mix(in oklab, var(--accent-soft) 24%, transparent),
+		0 16px 28px color-mix(in oklab, var(--shadow-soft) 64%, transparent);
+}
+
+.course-row {
+	transition:
+		background-color 0.2s ease,
+		box-shadow 0.2s ease;
+}
+
+.status-chip {
+	font-weight: 700;
+	letter-spacing: 0.01em;
+}
+
+.status-chip--signed {
+	background: var(--status-chip-signed-bg);
+	border-color: var(--status-chip-signed-border) !important;
+	color: var(--status-chip-signed-text) !important;
+}
+
+.status-chip--unsigned {
+	background: var(--status-chip-unsigned-bg);
+	border-color: var(--status-chip-unsigned-border) !important;
+	color: var(--status-chip-unsigned-text) !important;
+}
+
+.action-btn--secondary {
+	border-color: var(--line-strong);
+	background: var(--surface);
+	color: var(--ink);
+}
+
+.action-btn--secondary:hover {
+	background: var(--paper-strong);
+}
+
+.action-btn--quiet {
+	border-color: var(--line);
+	background: var(--surface-raised);
+	color: var(--ink);
+}
+
+.action-btn--quiet:hover {
+	background: var(--paper-strong);
+}
+
+.status-banner {
+	border-style: solid;
+	border-width: 1px;
+}
+
+.status-banner--neutral,
+.status-banner--loading {
+	border-style: dashed;
+	border-color: var(--status-neutral-border);
+	background: var(--status-neutral-bg);
+	color: var(--status-neutral-text);
+}
+
+.status-banner--success {
+	border-color: var(--status-success-border);
+	background: var(--status-success-bg);
+	color: var(--status-success-text);
+}
+
+.status-banner--error {
+	border-color: var(--status-error-border);
+	background: var(--status-error-bg);
+	color: var(--status-error-text);
+}
+
+.status-banner--info {
+	border-color: var(--status-info-border);
+	background: var(--status-info-bg);
+	color: var(--status-info-text);
+}
+
+.render-skip {
+	content-visibility: auto;
+	contain-intrinsic-size: 520px;
+}
+
+.relay-highlight {
+	animation: relayPulse 1.2s ease-out 1;
+}
+
+@keyframes relayPulse {
+	0% {
+		box-shadow: 0 0 0 0 color-mix(in oklab, var(--accent-soft) 40%, transparent);
+	}
+	100% {
+		box-shadow: 0 0 0 14px transparent;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	html {
+		scroll-behavior: auto;
+	}
+
+	.focus-ring,
+	.relay-highlight,
+	.action-btn {
+		transition: none;
+		animation: none;
+	}
+}
