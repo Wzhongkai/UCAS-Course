@@ -9,7 +9,7 @@ type SignTiming = {
   minMinutes: number;
   maxMinutes: number;
 };
-type Account = { id: string; username: string; usernameHint: string; enabled: boolean; timing: SignTiming };
+type Account = { id: string; username: string; usernameHint: string; enabled: boolean; timing: SignTiming; courseWhitelist: string[] };
 type PlanItem = {
   key: string; courseName: string; teacherName: string; courseId: string; courseIds: string[];
   start: number; attemptAt: number; state: string;
@@ -18,7 +18,7 @@ type PlanItem = {
 type AccountStatus = {
   id: string; enabled: boolean; date: string; lastScheduleAt: number | null;
   nextScheduleAt: number | null; lastError: string;
-  scheduleState: "waiting" | "ready" | "no_courses" | "error"; plan: PlanItem[];
+  scheduleState: "waiting" | "ready" | "no_courses" | "no_matching_courses" | "error"; plan: PlanItem[];
 };
 type WorkerStatus = { updatedAt: string; lastError: string; accounts: AccountStatus[] };
 type AutomationResponse = {
@@ -42,6 +42,7 @@ export default function AutomationPanelMulti() {
   const [password, setPassword] = useState("");
   const [newPasswords, setNewPasswords] = useState<Record<string, string>>({});
   const [timingDrafts, setTimingDrafts] = useState<Record<string, SignTiming>>({});
+  const [whitelistDrafts, setWhitelistDrafts] = useState<Record<string, string>>({});
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [worker, setWorker] = useState<WorkerStatus | null>(null);
   const [events, setEvents] = useState<{ at: string; message: string }[]>([]);
@@ -51,7 +52,7 @@ export default function AutomationPanelMulti() {
   const enabledAccounts = accounts.filter((account) => account.enabled);
   const allDoneToday = enabledAccounts.length > 0 && enabledAccounts.every((account) => {
     const status = worker?.accounts?.find((item) => item.id === account.id);
-    return status?.scheduleState === "no_courses" || Boolean(status?.plan?.length && status.plan.every((item) => item.state === "已签到"));
+    return status?.scheduleState === "no_courses" || status?.scheduleState === "no_matching_courses" || Boolean(status?.plan?.length && status.plan.every((item) => item.state === "已签到"));
   });
 
   const load = useCallback(async () => {
@@ -72,6 +73,7 @@ export default function AutomationPanelMulti() {
         account.id,
         current[account.id] ?? account.timing
       ])));
+      setWhitelistDrafts((current) => Object.fromEntries(nextAccounts.map((account) => [account.id, current[account.id] ?? (account.courseWhitelist ?? []).join("\n")] )));
       setWorker(data.worker);
       setEvents(data.events ?? []);
     } catch {
@@ -135,6 +137,11 @@ export default function AutomationPanelMulti() {
       return;
     }
     await mutate({ action: "timing", accountId: account.id, timing }, `${account.username} 的签到时间已更新。`);
+  }
+
+  async function onSaveWhitelist(account: Account) {
+    const courseWhitelist = (whitelistDrafts[account.id] ?? "").split(/\r?\n/u).map((item) => item.trim()).filter(Boolean);
+    await mutate({ action: "whitelist", accountId: account.id, courseWhitelist }, `${account.username} 的课程白名单已保存，后台会重新获取课表。`);
   }
 
   const online = worker && clockNow - new Date(worker.updatedAt).getTime() < 15_000;
@@ -223,6 +230,14 @@ export default function AutomationPanelMulti() {
             </label>
             <button type="button" disabled={saving || !newPasswords[account.id]} onClick={() => void onUpdatePassword(account)}
               className="action-btn action-btn--quiet mt-3 min-h-11 rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-60">保存新密码</button>
+            <div className="mt-5 rounded-xl border border-[color:var(--line)] bg-[color:var(--surface-raised)] p-4">
+              <h4 className="font-semibold">不打卡课程名单</h4>
+              <p className="mt-1 text-xs leading-5 text-[color:var(--muted)]">每行填写一个不需要自动打卡的完整课程名，按课程名精确匹配；名单内课程会跳过，留空表示正常签到全部课程。</p>
+              <textarea value={whitelistDrafts[account.id] ?? ""} onChange={(event) => setWhitelistDrafts((current) => ({ ...current, [account.id]: event.target.value }))}
+                rows={4} placeholder="例如：信息检索导论\n高等数学" className="focus-ring input-surface mt-3 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5" />
+              <button type="button" disabled={saving} onClick={() => void onSaveWhitelist(account)}
+                className="action-btn action-btn--quiet mt-3 min-h-11 rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-60">保存不打卡课程名单</button>
+            </div>
           </div>
         )) : null}
       </div>
@@ -244,7 +259,8 @@ export default function AutomationPanelMulti() {
                 {account.enabled ? <p className="mt-1 text-xs leading-5 text-[color:var(--muted)]">上次查询：{formatTime(status?.lastScheduleAt)}；下次查询：{formatTime(status?.nextScheduleAt)}</p> : null}
                 {status?.lastError ? <p className="status-banner status-banner--error mt-3 rounded-xl px-3 py-2 text-sm">{status.lastError}</p> : null}
                 {account.enabled && status?.scheduleState === "no_courses" ? <p className="status-banner status-banner--success mt-3 rounded-xl px-3 py-2 text-sm">今日无课，今天不再查询课表；下次将在明日 06:00 查询。</p> : null}
-                {account.enabled && status?.scheduleState !== "no_courses" && !status?.plan?.length ? <p className="mt-3 text-sm text-[color:var(--muted)]">尚无课程计划。未查询时会在 06:00 获取；查询失败时每 5 分钟重试。</p> : null}
+                {account.enabled && status?.scheduleState === "no_matching_courses" ? <p className="status-banner status-banner--success mt-3 rounded-xl px-3 py-2 text-sm">今日课程都在不打卡名单中，今天不执行签到；下次将在明日 06:00 查询。</p> : null}
+                {account.enabled && status?.scheduleState !== "no_courses" && status?.scheduleState !== "no_matching_courses" && !status?.plan?.length ? <p className="mt-3 text-sm text-[color:var(--muted)]">尚无课程计划。未查询时会在 06:00 获取；查询失败时每 5 分钟重试。</p> : null}
                 {account.enabled && status?.plan?.map((item) => (
                   <article key={item.key} className="clay-card mt-3 rounded-xl border border-[color:var(--line)] bg-[color:var(--surface-raised)] p-4">
                     <div className="flex flex-wrap items-start justify-between gap-2"><h4 className="font-semibold">{item.courseName || "未命名课程"}</h4><span className="text-sm font-semibold text-[color:var(--green)]">{item.state}</span></div>

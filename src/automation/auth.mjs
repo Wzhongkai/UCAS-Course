@@ -2,6 +2,16 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 const COOKIE_NAME = "ucas_course_access";
 
+// The portable Windows launcher opts into this mode only together with an
+// explicit loopback bind. Requiring both values prevents an accidentally
+// inherited LOCAL_DESKTOP_MODE=1 from disabling authentication on a public
+// deployment.
+export function localDesktopMode() {
+  return process.env.LOCAL_DESKTOP_MODE === "1"
+    && process.env.APP_HOST === "127.0.0.1"
+    && process.env.HOSTNAME === "127.0.0.1";
+}
+
 function accessKey() {
   return process.env.UCAS_ACCESS_KEY ?? process.env.AUTO_SIGN_ADMIN_TOKEN ?? "";
 }
@@ -12,7 +22,7 @@ function cookiePath() {
 }
 
 export function accessReady() {
-  return accessKey().length >= 16;
+  return localDesktopMode() || accessKey().length >= 16;
 }
 
 function safeEqual(left, right) {
@@ -28,10 +38,12 @@ function cookieValue() {
 }
 
 export function validAccessKey(value) {
+  if (localDesktopMode()) return false;
   return accessReady() && safeEqual(value, accessKey());
 }
 
 export function authorized(request) {
+  if (localDesktopMode()) return true;
   if (!accessReady()) return false;
   const cookie = request.cookies.get(COOKIE_NAME)?.value ?? "";
   return safeEqual(cookie, cookieValue());

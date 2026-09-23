@@ -10,6 +10,7 @@
     "dev": "node scripts/run.mjs dev",
     "build": "next build",
     "start": "node scripts/run.mjs start",
+    "build:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-portable.ps1",
     "lint": "eslint src test next.config.ts eslint.config.mjs",
     "test": "node --test"
   },

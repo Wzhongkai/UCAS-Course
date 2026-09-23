@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
-import { accessReady, clearAccessCookie, sameOrigin, setAccessCookie, validAccessKey } from "../../../automation/auth.mjs";
+import { accessReady, clearAccessCookie, localDesktopMode, sameOrigin, setAccessCookie, validAccessKey } from "../../../automation/auth.mjs";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(request) {
+  if (localDesktopMode()) {
+    if (!sameOrigin(request)) return NextResponse.json({ message: "非法来源请求" }, { status: 403 });
+    return NextResponse.json({ success: true });
+  }
   if (!accessReady()) return NextResponse.json({ message: "服务器尚未配置访问密钥" }, { status: 503 });
   if (!sameOrigin(request)) return NextResponse.json({ message: "非法来源请求" }, { status: 403 });
   let body;

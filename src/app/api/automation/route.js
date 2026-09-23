@@ -37,7 +37,8 @@ export async function POST(request) {
       enabled: body?.enabled,
       username: body?.username,
       password: body?.password,
-      timing: body?.timing
+      timing: body?.timing,
+      courseWhitelist: body?.courseWhitelist
     });
     return NextResponse.json({ success: true, settings: await readPublicSettings() });
   } catch (error) {

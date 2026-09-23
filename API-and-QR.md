@@ -15,7 +15,7 @@
 
 ## 一、项目提供给前端的 API
 
-以下路径相对于网站基地址。本地开发时通常是 `http://127.0.0.1:3100`；当前服务器部署基地址是 `https://example.com/course`，因此例如查询课程的完整地址是 `https://example.com/course/api/course-uuid/query`。所有项目 API 都需要先通过网站访问密钥验证并携带 HttpOnly Cookie。
+以下路径相对于网站基地址。本地开发时通常是 `http://127.0.0.1:3100`；如果部署在示例地址 `https://example.com/course`，查询课程的完整地址就是 `https://example.com/course/api/course-uuid/query`。所有项目 API 都需要先通过网站访问密钥验证并携带 HttpOnly Cookie。
 
 ### 1. 查询课程：`POST /api/course-uuid/query`
 
@@ -252,6 +252,7 @@ const imageDataUrl = await QRCode.toDataURL(signUrl, {
 | `POST /api/automation` | 提交 `{ "action": "password", "accountId": "<账号ID>", "password": "<新密码>" }` 更新密码 |
 | `POST /api/automation` | 提交 `{ "action": "timing", "accountId": "<账号ID>", "timing": { "mode": "fixed", "fixedMinutes": 10 } }` 设置固定提前时间 |
 | `POST /api/automation` | 提交 `{ "action": "timing", "accountId": "<账号ID>", "timing": { "mode": "random", "minMinutes": 10, "maxMinutes": 20 } }` 设置随机提前区间 |
+| `POST /api/automation` | 提交 `{ "action": "whitelist", "accountId": "<账号ID>", "courseWhitelist": ["课程名"] }` 设置不打卡课程名单；名单内课程跳过，空数组表示全部课程正常签到 |
 | `POST /api/automation` | 提交 `{ "action": "refresh", "accountId": "<账号ID>" }` 重新查询指定账号课表 |
 | `POST /api/automation` | 提交 `{ "action": "remove", "accountId": "<账号ID>" }` 移除账号并停止其后续任务 |
 

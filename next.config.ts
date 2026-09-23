@@ -6,6 +6,8 @@ const basePath = configuredBasePath && configuredBasePath !== "/"
   : "";
 
 const nextConfig: NextConfig = {
+  // The Windows portable build runs Next's self-contained server directly.
+  output: "standalone",
   basePath,
   env: {
     NEXT_PUBLIC_BASE_PATH: basePath

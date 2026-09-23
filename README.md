@@ -18,6 +18,7 @@ UCAS 课程查询、签到二维码和自动签到管理工具。项目提供一
 
 - 每天 06:00（`Asia/Shanghai`）查询各个已启用账号的当天课表。若程序在 06:00 后启动或账号刚启用，会立即补查；失败后每 5 分钟重试。
 - 每个账号可选择固定提前 1～120 分钟，或在指定的提前分钟区间内为每节课生成一个随机时间点。旧账号默认固定提前 10 分钟；同一账号、同一天、同一课程的随机结果在后台重启后保持不变。
+- 每个自动签到账号都可以设置不打卡课程名单。名单按完整课程名精确匹配（会统一全角字符、首尾空格、连续空白和英文字母大小写）；名单内课程不会生成签到计划，也不会发起签到请求，留空表示该账号的全部课程正常签到。
 - 到达该课程的计划时间后开始尝试。一次请求完成后至少等待 10 秒再试；遇到 HTTP 429 时遵守上游的 `Retry-After`。
 - 只有上游返回 `STATUS="0"` 且 `result.stuSignStatus="1"`，或课表已经显示该课程已签到，才记录为成功。
 - 成功后停止该课程的后续请求；一个账号当天所有课程都完成后，停止该账号当天的签到尝试，次日仍会正常查询课表。
@@ -36,7 +37,7 @@ UCAS 课程查询、签到二维码和自动签到管理工具。项目提供一
 ## 本地运行
 
 ```bash
-git clone https://github.com/Wzhongkai/UCAS-Course.git
+git clone https://github.com/<your-account>/UCAS-Course.git
 cd UCAS-Course
 npm ci
 cp .env.local.example .env.local
@@ -66,6 +67,25 @@ npm run dev
 ```
 
 默认地址是 `http://127.0.0.1:3100`。通过访问密钥验证后，即可使用全部功能。
+
+## Windows x64 便携版
+
+在 Windows x64 上可构建一个自带官方 Node.js 运行时的 ZIP：
+
+```powershell
+npm run build:windows
+```
+
+生成的 `dist/UCAS-Course-Portable.zip` 解压后，双击 `Start-UCAS-Course.cmd` 即可运行。便携版
+固定只监听 `127.0.0.1`，服务就绪后自动打开浏览器；它使用本地桌面模式，不要求填写或生成
+`UCAS_ACCESS_KEY`。首次启动只会在 `%LOCALAPPDATA%\UCAS-Course\secrets.env` 生成
+`AUTO_SIGN_SECRET`，自动签到数据和日志放在该目录下的 `data` 子目录。关闭启动器命令窗口或
+按 `Ctrl+C` 会清理网页与后台进程。请不要把该目录中的密钥或数据文件放入项目、Git 或 ZIP。
+
+便携包构建会下载固定版本的官方 Windows x64 Node.js，并在打包前校验 SHA256；构建审计会拒绝
+`.env.local`、`data`、运行时配置和本机密钥进入包内。`LOCAL_DESKTOP_MODE=1` 仅供便携启动器
+使用，且只有在 `APP_HOST` 与 `HOSTNAME` 同时为 `127.0.0.1` 时才有效；普通开发和生产部署仍
+要求 `UCAS_ACCESS_KEY`。构建脚本只接受原生 Windows x64 环境，不会伪造其他架构的包。
 
 ## 自动签到使用
 
@@ -113,7 +133,7 @@ APP_BASE_PATH=/course APP_HOST=127.0.0.1 APP_PORT=3100 npm start
 4. 持久化 `AUTO_SIGN_DATA_DIR`，并确保只有应用账号可以读取该目录和环境变量。
 5. 只运行一个自动签到实例。不同服务器上的多个实例无法共享进程锁，可能产生重复请求。
 
-`deploy/` 中包含当前维护者服务器使用的 systemd 和 Nginx 示例。它们依赖特定的账号、目录、Node.js 路径、端口和已有站点配置，不能直接视为通用安装脚本；部署到其他服务器前请先检查并修改。
+`deploy/` 中包含通用的 systemd 和 Nginx 模板。运行 `deploy/start-app.sh` 前必须通过环境变量明确传入 `ENV_FILE`、`DATA_DIR` 和 `RUN_USER`；可选传入 `PROJECT_DIR`、`NODE_BIN`、`NPM_BIN`、`APP_BASE_PATH`、`APP_PORT` 和 `SERVICE_FILE`。运行 `deploy/install-nginx.sh` 前必须传入 `PROJECT_DIR` 与 `NGINX_SITE_FILE`，并根据现有站点结构设置可选的 `NGINX_INSERT_BEFORE`。脚本不会再假定维护者的域名、账号或文件路径。
 
 ## 数据与安全
 
@@ -121,6 +141,7 @@ APP_BASE_PATH=/course APP_HOST=127.0.0.1 APP_PORT=3100 npm start
 - 普通课程查询和手动签到所填写的密码不会写入自动签到配置。
 - `.env.local`、`data/`、构建目录和依赖目录已被 Git 忽略，不应提交到版本库。
 - 网站访问密钥会建立有效期 7 天的 HttpOnly、SameSite=Strict Cookie。它用于防止未经授权访问，但不能替代 HTTPS、防火墙和服务器权限控制。
+- `LOCAL_DESKTOP_MODE=1` 不是通用免鉴权开关：应用只有在 `APP_HOST=127.0.0.1` 且 `HOSTNAME=127.0.0.1` 时才会启用它；普通开发或生产环境不会跳过访问密钥校验。
 - 请备份 `AUTO_SIGN_SECRET` 与持久化数据。密钥丢失后只能删除旧配置并重新录入账号。
 
 ## 开发与验证

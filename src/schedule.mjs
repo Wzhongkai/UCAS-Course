@@ -32,6 +32,30 @@ function courseName(course) {
   return String(course.courseName ?? "").trim();
 }
 
+export function normalizeCourseName(value) {
+  return String(value ?? "").normalize("NFKC").trim().replace(/\s+/gu, " ").toLocaleLowerCase("zh-CN");
+}
+
+export function normalizeCourseWhitelist(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  const result = [];
+  for (const item of value) {
+    const display = String(item ?? "").normalize("NFKC").trim().replace(/\s+/gu, " ");
+    const key = normalizeCourseName(display);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(display);
+  }
+  return result;
+}
+
+export function filterCoursesByWhitelist(courses, whitelist) {
+  const allowed = new Set(normalizeCourseWhitelist(whitelist).map(normalizeCourseName));
+  if (allowed.size === 0) return Array.isArray(courses) ? courses : [];
+  return (Array.isArray(courses) ? courses : []).filter((course) => !allowed.has(normalizeCourseName(course?.courseName)));
+}
+
 function sameTimedCourse(left, right) {
   return courseName(left.alternatives[0]) !== "" &&
     courseName(left.alternatives[0]) === courseName(right) &&

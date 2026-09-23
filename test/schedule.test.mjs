@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { groupCourses, parseCourseTime, scheduleOutcome, shanghaiDate, signTargetForAttempt, signWindow, timeAtSix } from "../src/schedule.mjs";
+import { filterCoursesByWhitelist, groupCourses, normalizeCourseName, parseCourseTime, scheduleOutcome, shanghaiDate, signTargetForAttempt, signWindow, timeAtSix } from "../src/schedule.mjs";
 
 const date = "20260914";
 const course = (id, start, end, name = "高等数学", teacher = "张老师") => ({
@@ -95,4 +95,13 @@ test("即使课程 ID 相同，结束时间不同也保留为两个目标", () =
     course("1234567", "08:00:00", "09:30:00")
   ], date);
   assert.equal(groups.length, 2);
+});
+
+test("课程白名单按规范化后的完整课程名精确匹配", () => {
+  const courses = [course("1234567", "08:00:00", "09:00:00", "机器学习"), course("1234568", "10:00:00", "11:00:00", "机器学习导论"), course("1234569", "12:00:00", "13:00:00", "数据库  原理")];
+  assert.equal(normalizeCourseName("  ＭＡＣＨＩＮＥ　ＬＥＡＲＮＩＮＧ  "), "machine learning");
+  assert.deepEqual(filterCoursesByWhitelist(courses, []), courses);
+  assert.deepEqual(filterCoursesByWhitelist(courses, ["  机器学习 "]), [courses[1], courses[2]]);
+  assert.deepEqual(filterCoursesByWhitelist(courses, ["数据库 原理"]), [courses[0], courses[1]]);
+  assert.deepEqual(filterCoursesByWhitelist(courses, ["机器学习导论"]), [courses[0], courses[2]]);
 });

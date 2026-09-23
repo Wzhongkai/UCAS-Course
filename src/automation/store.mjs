@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { normalizeCourseWhitelist } from "../schedule.mjs";
 
 // Runtime-only persistent storage; it must not be bundled into Next's server output.
 export const dataDirectory = resolve(/*turbopackIgnore: true*/ process.env.AUTO_SIGN_DATA_DIR || "data");
@@ -88,7 +89,8 @@ async function readRawSettings() {
       updatedAt: raw.updatedAt,
       accounts: raw.accounts.map((account) => ({
         ...account,
-        timing: normalizeSignTiming(account.timing)
+        timing: normalizeSignTiming(account.timing),
+        courseWhitelist: normalizeCourseWhitelist(account.courseWhitelist)
       }))
     };
   }
@@ -101,6 +103,7 @@ async function readRawSettings() {
         enabled: Boolean(raw.enabled),
         credentials: raw.credentials,
         timing: { ...DEFAULT_SIGN_TIMING },
+        courseWhitelist: [],
         updatedAt: raw.updatedAt,
         refreshRequestedAt: raw.refreshRequestedAt
       }] : []
@@ -138,7 +141,7 @@ function validateCredentials(username, password) {
   return username.trim();
 }
 
-export async function updateAutomationSettings({ action, accountId, username, password, enabled, timing }) {
+export async function updateAutomationSettings({ action, accountId, username, password, enabled, timing, courseWhitelist }) {
   const current = await readRawSettings();
   const accounts = current.accounts.map((account) => ({ ...account }));
   const index = accounts.findIndex((account) => account.id === accountId);
@@ -155,6 +158,7 @@ export async function updateAutomationSettings({ action, accountId, username, pa
       enabled: true,
       credentials: encryptCredentials(cleanUsername, password),
       timing: { ...DEFAULT_SIGN_TIMING },
+      courseWhitelist: [],
       updatedAt: now,
       refreshRequestedAt: null
     });
@@ -178,6 +182,15 @@ export async function updateAutomationSettings({ action, accountId, username, pa
     if (index < 0) throw new Error("账号不存在");
     accounts[index].timing = normalizeSignTiming(timing, true);
     accounts[index].updatedAt = now;
+  } else if (action === "whitelist") {
+    if (index < 0) throw new Error("账号不存在");
+    if (!Array.isArray(courseWhitelist)) throw new Error("课程白名单格式无效");
+    if (courseWhitelist.length > 100) throw new Error("课程白名单最多保存 100 门课");
+    if (courseWhitelist.some((item) => typeof item !== "string")) throw new Error("课程白名单必须由课程名文本组成");
+    const normalized = normalizeCourseWhitelist(courseWhitelist);
+    if (normalized.some((item) => item.length > 120)) throw new Error("课程名称不能超过 120 个字符");
+    accounts[index].courseWhitelist = normalized;
+    accounts[index].updatedAt = now;
   } else {
     throw new Error("未知操作");
   }
@@ -196,6 +209,7 @@ export async function readPublicSettings() {
         id: account.id,
         enabled: account.enabled,
         timing: normalizeSignTiming(account.timing),
+        courseWhitelist: normalizeCourseWhitelist(account.courseWhitelist),
         username,
         usernameHint: `${username.slice(0, 3)}***${username.slice(-3)}`
       };

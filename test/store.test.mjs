@@ -27,6 +27,7 @@ test("多账号配置加密保存，管理状态不泄露密码并兼容旧账�
     const publicSettings = await store.readPublicSettings();
     assert.equal(publicSettings.accounts.length, 1);
     assert.equal(publicSettings.accounts[0].username, "20260001");
+    assert.deepEqual(publicSettings.accounts[0].courseWhitelist, []);
     assert.equal(JSON.stringify(publicSettings).includes("test-secret"), false);
     await store.updateAutomationSettings({
       action: "timing",
@@ -36,6 +37,11 @@ test("多账号配置加密保存，管理状态不泄露密码并兼容旧账�
     assert.deepEqual((await store.readPublicSettings()).accounts[0].timing, {
       mode: "random", fixedMinutes: 10, minMinutes: 12, maxMinutes: 24
     });
+    await store.updateAutomationSettings({
+      action: "whitelist", accountId: firstId, courseWhitelist: ["  机器学习 ", "机器学习", "数据库  原理"]
+    });
+    assert.deepEqual((await store.readPublicSettings()).accounts[0].courseWhitelist, ["机器学习", "数据库 原理"]);
+    await assert.rejects(store.updateAutomationSettings({ action: "whitelist", accountId: firstId, courseWhitelist: "机器学习" }), /白名单格式无效/);
     await assert.rejects(store.updateAutomationSettings({
       action: "timing",
       accountId: firstId,

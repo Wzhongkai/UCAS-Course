@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { readAutomationSettings, writeWorkerStatus, readWorkerEvents, writeWorkerEvents, encryptionReady, dataDirectory } from "./automation/store.mjs";
 import { accessReady } from "./automation/auth.mjs";
 import { UcasClient } from "./ucas.mjs";
-import { scheduleOutcome, shanghaiDate, signTargetForAttempt, signWindow, timeAtSix } from "./schedule.mjs";
+import { filterCoursesByWhitelist, scheduleOutcome, shanghaiDate, signTargetForAttempt, signWindow, timeAtSix } from "./schedule.mjs";
 
 const completedFile = resolve(dataDirectory, "completed.json");
 const logFile = resolve(dataDirectory, "auto-sign.log");
@@ -92,6 +92,7 @@ function createState(account) {
     refreshVersion: account.refreshRequestedAt,
     enabled: Boolean(account.enabled),
     timing: account.timing,
+    courseWhitelist: account.courseWhitelist,
     client: account.enabled ? new UcasClient(account.credentials) : null,
     activeDate: "",
     groups: [],
@@ -150,18 +151,21 @@ async function syncSettings(now) {
 
 async function refreshSchedule(state, now) {
   try {
-    const courses = await state.client.schedule(state.activeDate);
+    const rawCourses = await state.client.schedule(state.activeDate);
+    const courses = filterCoursesByWhitelist(rawCourses, state.courseWhitelist);
     const outcome = scheduleOutcome(courses, state.activeDate);
     state.groups = outcome.groups;
     state.lastScheduleAt = Date.now();
     state.nextScheduleAt = timeAtSix(shanghaiDate(now + 24 * 60 * 60_000));
-    state.scheduleState = outcome.state;
+    state.scheduleState = rawCourses.length > 0 && courses.length === 0 ? "no_matching_courses" : outcome.state;
     state.lastError = "";
     state.allDoneLogged = false;
-    if (courses.length === 0) {
+    if (rawCourses.length === 0) {
       log(`${state.usernameHint} · ${state.activeDate}：今日无课，本日不再查询课表。`);
+    } else if (courses.length === 0) {
+      log(`${state.usernameHint} · ${state.activeDate}：课表有 ${rawCourses.length} 条，但全部课程都在不打卡名单中，今日不执行签到。`);
     } else {
-      log(`${state.usernameHint} · ${state.activeDate} 课表已获取：${courses.length} 条，合并为 ${state.groups.length} 组。`);
+      log(`${state.usernameHint} · ${state.activeDate} 课表已获取：${rawCourses.length} 条，跳过不打卡名单后剩余 ${courses.length} 条，合并为 ${state.groups.length} 组。`);
     }
     for (const group of state.groups) {
       if (group.signTargets.some((course) => course.signStatus === "1")) {
