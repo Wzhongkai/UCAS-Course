@@ -154,7 +154,15 @@ async function refreshSchedule(state, now) {
     const rawCourses = await state.client.schedule(state.activeDate);
     const courses = filterCoursesByWhitelist(rawCourses, state.courseWhitelist);
     const outcome = scheduleOutcome(courses, state.activeDate);
+
+    // Treat a successful refresh as a complete replacement of the current
+    // plan. Keep the old plan and its retry state untouched until all query,
+    // filtering, and scheduling steps above have succeeded.
     state.groups = outcome.groups;
+    state.attempts.clear();
+    state.nextAttemptAt.clear();
+    state.messages.clear();
+    state.expired.clear();
     state.lastScheduleAt = Date.now();
     state.nextScheduleAt = timeAtSix(shanghaiDate(now + 24 * 60 * 60_000));
     state.scheduleState = rawCourses.length > 0 && courses.length === 0 ? "no_matching_courses" : outcome.state;
