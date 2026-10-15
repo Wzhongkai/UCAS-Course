@@ -9,7 +9,7 @@ const mode = process.argv[2] || "--dev";
 if (!["--dev", "--init", "--bot", "--build"].includes(mode)) throw new Error("未知 QQ 调试模式");
 try {
   await writeFile(config, `# QQ 本地调试专用。此文件已被 Git 忽略，不要分享或提交。
-# 只需填写 AppSecret，其他随机密钥首次生成后请保留。
+# 请填写 QQ_BOT_APP_ID 和 QQ_BOT_APP_SECRET，其他随机密钥首次生成后请保留。
 QQ_BOT_ENABLED=1
 QQ_BOT_APP_ID=
 QQ_BOT_APP_SECRET=
