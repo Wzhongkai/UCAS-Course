@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { filterCoursesByWhitelist, groupCourses, normalizeCourseName, parseCourseTime, scheduleOutcome, shanghaiDate, signTargetForAttempt, signWindow, timeAtSix } from "../src/schedule.mjs";
+import { filterCoursesByWhitelist, groupCourses, normalizeCourseName, parseCourseTime, resolveCourseTiming, scheduleOutcome, shanghaiDate, signTargetForAttempt, signWindow, timeAtSix } from "../src/schedule.mjs";
 
 const date = "20260914";
 const course = (id, start, end, name = "高等数学", teacher = "张老师") => ({
@@ -73,6 +73,21 @@ test("每个账号可以使用固定或稳定的随机提前时间", () => {
   assert.equal(random.attemptAt, repeated.attemptAt);
   assert.ok(random.attemptAt >= Date.parse("2026-09-14T07:40:00+08:00"));
   assert.ok(random.attemptAt <= Date.parse("2026-09-14T07:50:00+08:00"));
+});
+
+test("单课程时间覆盖优先于默认时间，其他课程继续使用默认值", () => {
+  const defaultTiming = { mode: "fixed", fixedMinutes: 10, minMinutes: 10, maxMinutes: 20 };
+  const courseTiming = { mode: "fixed", fixedMinutes: 25, minMinutes: 10, maxMinutes: 20 };
+  const overrides = { [normalizeCourseName("高等 数学")]: courseTiming };
+  const [math] = groupCourses([course("1234567", "08:00:00", "09:40:00", "高等  数学")], date);
+  const [english] = groupCourses([course("1234568", "10:00:00", "11:00:00", "大学英语")], date);
+  const mathTiming = resolveCourseTiming(defaultTiming, overrides, math.first.courseName);
+  const englishTiming = resolveCourseTiming(defaultTiming, overrides, english.first.courseName);
+
+  assert.deepEqual(mathTiming, courseTiming);
+  assert.equal(signWindow(math, mathTiming, "account-a").attemptAt, Date.parse("2026-09-14T07:35:00+08:00"));
+  assert.deepEqual(englishTiming, defaultTiming);
+  assert.equal(signWindow(english, englishTiming, "account-a").attemptAt, Date.parse("2026-09-14T09:50:00+08:00"));
 });
 
 test("成功获取空课表时明确标记为今日无课", () => {

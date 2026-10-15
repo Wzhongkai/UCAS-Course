@@ -37,6 +37,14 @@ function cookieValue() {
     .digest("hex");
 }
 
+// Server-side callers use the same access proof as the web application. This
+// value must only be sent to our loopback backend, never included in replies.
+export function accessCookieHeader() {
+  if (localDesktopMode()) return "";
+  if (!accessReady()) throw new Error("后台访问密钥尚未配置");
+  return `${COOKIE_NAME}=${cookieValue()}`;
+}
+
 export function validAccessKey(value) {
   if (localDesktopMode()) return false;
   return accessReady() && safeEqual(value, accessKey());

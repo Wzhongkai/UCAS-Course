@@ -1,5 +1,8 @@
 .env
 .env.local
+.env.qq.local
+qq.local.env
+data-qq-dev/
 .next/
 node_modules/
 data/

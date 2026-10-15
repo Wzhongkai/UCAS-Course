@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { appUrl } from "../app-path";
 
 type SignTiming = {
@@ -9,7 +9,10 @@ type SignTiming = {
   minMinutes: number;
   maxMinutes: number;
 };
-type Account = { id: string; username: string; usernameHint: string; enabled: boolean; timing: SignTiming; courseWhitelist: string[] };
+type Account = {
+  id: string; username: string; usernameHint: string; enabled: boolean; timing: SignTiming;
+  courseTimingOverrides?: Record<string, SignTiming>; courseWhitelist: string[];
+};
 type PlanItem = {
   key: string; courseName: string; teacherName: string; courseId: string; courseIds: string[];
   start: number; attemptAt: number; state: string;
@@ -27,6 +30,61 @@ type AutomationResponse = {
   events: { at: string; message: string }[];
   message?: string;
 };
+type QqBinding = { accountId: string; bound: boolean; mode: "all" | "failure" | "off"; userHint: string | null };
+type QqStatus = {
+  bindings: QqBinding[];
+  pending: number;
+  failed: number;
+  sent: number;
+  runtime: Record<string, unknown> | null;
+  configured: boolean;
+  message?: string;
+};
+type QqBindingCode = { code: string; expiresAt: string };
+type ServerDraftValues = { timing: SignTiming; whitelist: string };
+
+function qqRuntimeOnline(runtime: QqStatus["runtime"]) {
+  if (!runtime) return false;
+  if (runtime.connected !== true || typeof runtime.updatedAt !== "string") return false;
+  const updatedAt = Date.parse(runtime.updatedAt);
+  return Number.isFinite(updatedAt) && Date.now() - updatedAt < 120_000;
+}
+
+function qqRuntimeErrorText(runtime: QqStatus["runtime"]) {
+  if (typeof runtime?.lastError !== "string") return "";
+  return runtime.lastError.trim().slice(0, 300);
+}
+
+function sameTiming(left: SignTiming, right: SignTiming) {
+  return left.mode === right.mode
+    && left.fixedMinutes === right.fixedMinutes
+    && left.minMinutes === right.minMinutes
+    && left.maxMinutes === right.maxMinutes;
+}
+
+function timingError(timing: SignTiming) {
+  if (timing.mode === "fixed") {
+    return Number.isInteger(timing.fixedMinutes) && timing.fixedMinutes >= 1 && timing.fixedMinutes <= 120
+      ? ""
+      : "提前分钟数必须是 1 到 120 的整数";
+  }
+  if (!Number.isInteger(timing.minMinutes) || !Number.isInteger(timing.maxMinutes)
+    || timing.minMinutes < 1 || timing.maxMinutes > 120) {
+    return "随机区间必须是 1 到 120 的整数分钟";
+  }
+  if (timing.minMinutes > timing.maxMinutes) return "最多提前分钟数不能小于最少提前分钟数";
+  return "";
+}
+
+function timingLabel(timing: SignTiming) {
+  return timing.mode === "fixed"
+    ? `固定提前 ${timing.fixedMinutes} 分钟`
+    : `随机提前 ${timing.minMinutes}–${timing.maxMinutes} 分钟`;
+}
+
+function whitelistValue(account: Account) {
+  return (account.courseWhitelist ?? []).join("\n");
+}
 
 function formatTime(timestamp: number | null | undefined) {
   if (!timestamp || !Number.isFinite(timestamp)) return "--";
@@ -43,9 +101,17 @@ export default function AutomationPanelMulti() {
   const [newPasswords, setNewPasswords] = useState<Record<string, string>>({});
   const [timingDrafts, setTimingDrafts] = useState<Record<string, SignTiming>>({});
   const [whitelistDrafts, setWhitelistDrafts] = useState<Record<string, string>>({});
+  const [courseNameDrafts, setCourseNameDrafts] = useState<Record<string, string>>({});
+  const [courseTimingDrafts, setCourseTimingDrafts] = useState<Record<string, SignTiming>>({});
+  const serverDraftValues = useRef<Record<string, ServerDraftValues>>({});
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [worker, setWorker] = useState<WorkerStatus | null>(null);
   const [events, setEvents] = useState<{ at: string; message: string }[]>([]);
+  const [qq, setQq] = useState<QqStatus | null>(null);
+  const [qqError, setQqError] = useState("");
+  const [qqBusy, setQqBusy] = useState<Record<string, boolean>>({});
+  const [qqMessage, setQqMessage] = useState("");
+  const [bindingCodes, setBindingCodes] = useState<Record<string, QqBindingCode>>({});
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
   const [clockNow, setClockNow] = useState(0);
@@ -55,7 +121,24 @@ export default function AutomationPanelMulti() {
     return status?.scheduleState === "no_courses" || status?.scheduleState === "no_matching_courses" || Boolean(status?.plan?.length && status.plan.every((item) => item.state === "已签到"));
   });
 
+  const loadQq = useCallback(async () => {
+    try {
+      const response = await fetch(appUrl("/api/qq"), { cache: "no-store" });
+      const data = (await response.json()) as QqStatus;
+      if (response.status === 401) return;
+      if (!response.ok) {
+        setQqError(data.message ?? "读取 QQ 通知状态失败");
+        return;
+      }
+      setQq(data);
+      setQqError("");
+    } catch {
+      setQqError("无法读取 QQ 通知状态");
+    }
+  }, []);
+
   const load = useCallback(async () => {
+    void loadQq();
     try {
       const response = await fetch(appUrl("/api/automation"), { cache: "no-store" });
       const data = (await response.json()) as AutomationResponse;
@@ -68,18 +151,31 @@ export default function AutomationPanelMulti() {
       if (!response.ok) { setMessage(data.message ?? "读取自动签到状态失败"); return; }
       setAccess("ready");
       const nextAccounts = data.settings.accounts ?? [];
+      const previousServerDrafts = serverDraftValues.current;
+      const nextServerDrafts = Object.fromEntries(nextAccounts.map((account) => [account.id, {
+        timing: { ...account.timing },
+        whitelist: whitelistValue(account)
+      }])) as Record<string, ServerDraftValues>;
       setAccounts(nextAccounts);
-      setTimingDrafts((current) => Object.fromEntries(nextAccounts.map((account) => [
-        account.id,
-        current[account.id] ?? account.timing
-      ])));
-      setWhitelistDrafts((current) => Object.fromEntries(nextAccounts.map((account) => [account.id, current[account.id] ?? (account.courseWhitelist ?? []).join("\n")] )));
+      setTimingDrafts((current) => Object.fromEntries(nextAccounts.map((account) => {
+        const draft = current[account.id];
+        const previousServer = previousServerDrafts[account.id]?.timing;
+        return [account.id, !draft || !previousServer || sameTiming(draft, previousServer) ? { ...account.timing } : draft];
+      })));
+      setWhitelistDrafts((current) => Object.fromEntries(nextAccounts.map((account) => {
+        const draft = current[account.id];
+        const previousServer = previousServerDrafts[account.id]?.whitelist;
+        return [account.id, draft === undefined || previousServer === undefined || draft === previousServer ? whitelistValue(account) : draft];
+      })));
+      setCourseNameDrafts((current) => Object.fromEntries(nextAccounts.map((account) => [account.id, current[account.id] ?? ""])));
+      setCourseTimingDrafts((current) => Object.fromEntries(nextAccounts.map((account) => [account.id, current[account.id] ?? { ...account.timing }])));
+      serverDraftValues.current = nextServerDrafts;
       setWorker(data.worker);
       setEvents(data.events ?? []);
     } catch {
       setMessage("无法连接本地服务，请确认网页和后台进程都在运行");
     }
-  }, []);
+  }, [loadQq]);
 
   useEffect(() => {
     const initial = window.setTimeout(() => { setClockNow(Date.now()); void load(); }, 0);
@@ -103,6 +199,39 @@ export default function AutomationPanelMulti() {
       setMessage(error instanceof Error ? error.message : "操作失败");
       return false;
     } finally { setSaving(false); }
+  }
+
+  async function mutateQq(body: Record<string, unknown>, successMessage: string) {
+    const accountId = typeof body.accountId === "string" ? body.accountId : "";
+    setQqBusy((current) => ({ ...current, [accountId]: true }));
+    setQqMessage("");
+    try {
+      const response = await fetch(appUrl("/api/qq"), {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message ?? "QQ 设置操作失败");
+      if (body.action === "code" && typeof data.code === "string" && typeof data.expiresAt === "string") {
+        setBindingCodes((current) => ({ ...current, [accountId]: { code: data.code, expiresAt: data.expiresAt } }));
+      } else {
+        setQqMessage(successMessage);
+      }
+      await loadQq();
+    } catch (error) {
+      setQqMessage(error instanceof Error ? error.message : "QQ 设置操作失败");
+    } finally {
+      setQqBusy((current) => ({ ...current, [accountId]: false }));
+    }
+  }
+
+  async function onUnbindQq(account: Account) {
+    if (!window.confirm(`确定解除 ${account.username} 的 QQ 绑定吗？`)) return;
+    setBindingCodes((current) => {
+      const next = { ...current };
+      delete next[account.id];
+      return next;
+    });
+    await mutateQq({ action: "unbind", accountId: account.id }, "QQ 已解绑。");
   }
 
   async function onAdd(event: FormEvent<HTMLFormElement>) {
@@ -132,11 +261,39 @@ export default function AutomationPanelMulti() {
 
   async function onSaveTiming(account: Account) {
     const timing = timingDrafts[account.id] ?? account.timing;
-    if (timing.mode === "random" && timing.minMinutes > timing.maxMinutes) {
-      setMessage("随机区间中，最多提前分钟数不能小于最少提前分钟数");
+    const error = timingError(timing);
+    if (error) {
+      setMessage(error);
       return;
     }
     await mutate({ action: "timing", accountId: account.id, timing }, `${account.username} 的签到时间已更新。`);
+  }
+
+  function updateCourseTiming(account: Account, patch: Partial<SignTiming>) {
+    setCourseTimingDrafts((current) => ({
+      ...current,
+      [account.id]: { ...(current[account.id] ?? account.timing), ...patch }
+    }));
+  }
+
+  async function onSaveCourseTiming(account: Account) {
+    const courseName = (courseNameDrafts[account.id] ?? "").normalize("NFKC").trim().replace(/\s+/gu, " ");
+    if (!courseName) {
+      setMessage("请填写完整课程名");
+      return;
+    }
+    const timing = courseTimingDrafts[account.id] ?? account.timing;
+    const error = timingError(timing);
+    if (error) {
+      setMessage(error);
+      return;
+    }
+    const saved = await mutate({ action: "course-timing", accountId: account.id, courseName, timing }, `${courseName} 的单课签到时间已保存。`);
+    if (saved) setCourseNameDrafts((current) => ({ ...current, [account.id]: "" }));
+  }
+
+  async function onRestoreCourseTiming(account: Account, courseName: string) {
+    await mutate({ action: "course-timing", accountId: account.id, courseName, timing: null }, `${courseName} 已恢复默认签到时间。`);
   }
 
   async function onSaveWhitelist(account: Account) {
@@ -145,12 +302,21 @@ export default function AutomationPanelMulti() {
   }
 
   const online = worker && clockNow - new Date(worker.updatedAt).getTime() < 15_000;
+  const qqStatusText = qq ? !qq.configured ? "待配置" : qqRuntimeOnline(qq.runtime) ? "在线" : "未运行" : qqError ? "状态不可用" : "读取中";
+  const qqRuntimeError = qqRuntimeErrorText(qq?.runtime ?? null);
 
   return (
     <section id="main-content" className="grid items-start gap-5 xl:grid-cols-[minmax(320px,400px)_minmax(0,1fr)]">
       <div className="space-y-5">
         <div className="panel rounded-2xl p-5 sm:p-6">
-          <h2 className="font-[var(--font-serif)] text-2xl font-semibold">自动签到账号</h2>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="font-[var(--font-serif)] text-2xl font-semibold">自动签到账号</h2>
+            <span className="text-xs text-[color:var(--muted)]" title={typeof qq?.runtime?.lastError === "string" ? qq.runtime.lastError : undefined}>
+              QQ：{qqStatusText} · 失败 {qq ? qq.failed : "--"}
+              {qq?.runtime?.connected === true && typeof qq.runtime.updatedAt === "string" && !qqRuntimeOnline(qq.runtime) ? " · 心跳已过期" : ""}
+            </span>
+          </div>
+          {qqRuntimeError ? <p role="status" className="mt-1 text-xs leading-5 text-[color:var(--muted)]">QQ 通知状态：{qqRuntimeError}</p> : null}
           <p className="mt-2 text-sm leading-6 text-[color:var(--muted)]">在这里维护多个学号。每个账号独立查询课表、签到和记录结果。</p>
           {access === "loading" ? <p className="mt-5 text-sm">正在读取设置…</p> : null}
           {access === "unavailable" ? <p className="status-banner status-banner--error mt-5 rounded-xl px-3 py-3 text-sm">{message}。请检查服务器配置。</p> : null}
@@ -188,8 +354,42 @@ export default function AutomationPanelMulti() {
                 className="action-btn action-btn--quiet min-h-11 rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-60">移除</button>
             </div>
             <div className="mt-5 rounded-xl border border-[color:var(--line)] bg-[color:var(--surface-raised)] p-4">
-              <h4 className="font-semibold">签到时间</h4>
-              <p className="mt-1 text-xs leading-5 text-[color:var(--muted)]">每节课单独计算；随机结果对同一账号和课程保持稳定，后台重启不会重新抽取。</p>
+              {(() => {
+                const binding = qq?.bindings?.find((item) => item.accountId === account.id);
+                const code = bindingCodes[account.id];
+                const busy = Boolean(qqBusy[account.id]);
+                return (
+                  <>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h4 className="font-semibold">QQ 通知</h4>
+                      <span className="text-xs text-[color:var(--muted)]">{binding?.bound ? `已绑定${binding.userHint ? `：${binding.userHint}` : ""}` : "未绑定"}</span>
+                    </div>
+                    <p className="mt-2 text-xs leading-5 text-[color:var(--muted)]">普通用户在机器人私聊中发送“绑定学号 学号 密码”自助验证；下方绑定码供管理员管理恢复使用。</p>
+                    <label className="mt-3 block text-sm font-semibold">通知模式
+                      <select value={binding?.mode ?? "all"} disabled={busy || !binding?.bound}
+                        onChange={(event) => void mutateQq({ action: "preference", accountId: account.id, mode: event.target.value }, "QQ 通知模式已更新。")}
+                        className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5">
+                        <option value="all">全部事件</option>
+                        <option value="failure">仅失败</option>
+                        <option value="off">关闭通知</option>
+                      </select>
+                    </label>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button type="button" disabled={busy || !qq?.configured} onClick={() => void mutateQq({ action: "code", accountId: account.id }, "绑定码已生成。")}
+                        className="action-btn action-btn--secondary min-h-11 rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-60">生成绑定码</button>
+                      {binding?.bound ? <button type="button" disabled={busy} onClick={() => void onUnbindQq(account)}
+                        className="action-btn action-btn--quiet min-h-11 rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-60">解绑</button> : null}
+                    </div>
+                    {code ? <p role="status" className="mt-3 text-sm leading-6">绑定 {code.code} · 有效期至 {formatTime(new Date(code.expiresAt).getTime())}</p> : null}
+                    {qqError ? <p className="mt-2 text-xs leading-5 text-[color:var(--muted)]">{qqError}</p> : null}
+                    {qqMessage ? <p role="status" className="mt-2 text-sm leading-5">{qqMessage}</p> : null}
+                  </>
+                );
+              })()}
+            </div>
+            <div className="mt-5 rounded-xl border border-[color:var(--line)] bg-[color:var(--surface-raised)] p-4">
+              <h4 className="font-semibold">默认签到时间</h4>
+              <p className="mt-1 text-xs leading-5 text-[color:var(--muted)]">未单独设置课程的默认时间；随机结果对同一账号和课程保持稳定，后台重启不会重新抽取。</p>
               <label className="mt-3 block text-sm font-semibold">方式
                 <select value={(timingDrafts[account.id] ?? account.timing).mode}
                   onChange={(event) => updateTiming(account, { mode: event.target.value as SignTiming["mode"] })}
@@ -223,6 +423,69 @@ export default function AutomationPanelMulti() {
               )}
               <button type="button" disabled={saving} onClick={() => void onSaveTiming(account)}
                 className="action-btn action-btn--quiet mt-3 min-h-11 rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-60">保存签到时间</button>
+            </div>
+            <div className="mt-5 rounded-xl border border-[color:var(--line)] bg-[color:var(--surface-raised)] p-4">
+              <h4 className="font-semibold">单课程签到时间</h4>
+              <p className="mt-1 text-xs leading-5 text-[color:var(--muted)]">填写完整课程名设置单课覆盖；该课程优先使用此时间，其余课程沿用默认时间。</p>
+              <label className="mt-3 block text-sm font-semibold">完整课程名
+                <input value={courseNameDrafts[account.id] ?? ""}
+                  onChange={(event) => setCourseNameDrafts((current) => ({ ...current, [account.id]: event.target.value }))}
+                  maxLength={120} placeholder="例如：高等数学" spellCheck={false}
+                  className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5" />
+              </label>
+              <label className="mt-3 block text-sm font-semibold">方式
+                <select value={(courseTimingDrafts[account.id] ?? account.timing).mode}
+                  onChange={(event) => updateCourseTiming(account, { mode: event.target.value as SignTiming["mode"] })}
+                  className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5">
+                  <option value="fixed">固定提前</option>
+                  <option value="random">随机区间</option>
+                </select>
+              </label>
+              {(courseTimingDrafts[account.id] ?? account.timing).mode === "fixed" ? (
+                <label className="mt-3 block text-sm font-semibold">提前分钟数
+                  <input type="number" min="1" max="120" step="1"
+                    value={(courseTimingDrafts[account.id] ?? account.timing).fixedMinutes}
+                    onChange={(event) => updateCourseTiming(account, { fixedMinutes: Number(event.target.value) })}
+                    className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5" />
+                </label>
+              ) : (
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <label className="block text-sm font-semibold">最少提前（分钟）
+                    <input type="number" min="1" max="120" step="1"
+                      value={(courseTimingDrafts[account.id] ?? account.timing).minMinutes}
+                      onChange={(event) => updateCourseTiming(account, { minMinutes: Number(event.target.value) })}
+                      className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5" />
+                  </label>
+                  <label className="block text-sm font-semibold">最多提前（分钟）
+                    <input type="number" min="1" max="120" step="1"
+                      value={(courseTimingDrafts[account.id] ?? account.timing).maxMinutes}
+                      onChange={(event) => updateCourseTiming(account, { maxMinutes: Number(event.target.value) })}
+                      className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5" />
+                  </label>
+                </div>
+              )}
+              <button type="button" disabled={saving || !(courseNameDrafts[account.id] ?? "").trim()} onClick={() => void onSaveCourseTiming(account)}
+                className="action-btn action-btn--quiet mt-3 min-h-11 rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-60">保存单课时间</button>
+              {Object.entries(account.courseTimingOverrides ?? {}).length === 0 ? <p className="mt-3 text-xs text-[color:var(--muted)]">尚无单课覆盖。</p> : (
+                <ul className="mt-4 space-y-2" aria-label="单课程签到时间覆盖">
+                  {Object.entries(account.courseTimingOverrides ?? {}).sort(([left], [right]) => left.localeCompare(right, "zh-CN")).map(([courseName, timing]) => (
+                    <li key={courseName} className="flex flex-wrap items-center justify-between gap-3 border-t border-[color:var(--line)] pt-3">
+                      <div>
+                        <p className="text-sm font-semibold">{courseName}</p>
+                        <p className="mt-1 text-xs text-[color:var(--muted)]">{timingLabel(timing)}</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button type="button" disabled={saving} onClick={() => {
+                          setCourseNameDrafts((current) => ({ ...current, [account.id]: courseName }));
+                          setCourseTimingDrafts((current) => ({ ...current, [account.id]: { ...timing } }));
+                        }} className="action-btn action-btn--quiet min-h-10 rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-60">编辑</button>
+                        <button type="button" disabled={saving} onClick={() => void onRestoreCourseTiming(account, courseName)}
+                          className="action-btn action-btn--quiet min-h-10 rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-60">恢复默认</button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
             <label className="mt-4 block text-sm font-semibold">更新密码
               <input type="password" value={newPasswords[account.id] ?? ""} onChange={(event) => setNewPasswords((current) => ({ ...current, [account.id]: event.target.value }))}

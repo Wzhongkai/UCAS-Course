@@ -36,6 +36,25 @@ export function normalizeCourseName(value) {
   return String(value ?? "").normalize("NFKC").trim().replace(/\s+/gu, " ").toLocaleLowerCase("zh-CN");
 }
 
+export function resolveCourseTiming(defaultTiming, overrides, courseName) {
+  const normalizedName = normalizeCourseName(courseName);
+  if (!normalizedName || !overrides || typeof overrides !== "object" || Array.isArray(overrides)) return defaultTiming;
+
+  for (const [name, timing] of Object.entries(overrides)) {
+    if (normalizeCourseName(name) !== normalizedName) continue;
+    if (timing?.mode === "fixed" && Number.isInteger(timing.fixedMinutes) && timing.fixedMinutes >= 1 && timing.fixedMinutes <= 120) {
+      return timing;
+    }
+    if (timing?.mode === "random" && Number.isInteger(timing.minMinutes) && Number.isInteger(timing.maxMinutes)
+      && timing.minMinutes >= 1 && timing.maxMinutes <= 120 && timing.minMinutes <= timing.maxMinutes) {
+      return timing;
+    }
+    return defaultTiming;
+  }
+
+  return defaultTiming;
+}
+
 export function normalizeCourseWhitelist(value) {
   if (!Array.isArray(value)) return [];
   const seen = new Set();

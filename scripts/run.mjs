@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const mode = process.argv[2];
 if (mode !== "dev" && mode !== "start") {
@@ -8,7 +9,11 @@ if (mode !== "dev" && mode !== "start") {
   process.exit(1);
 }
 
-const root = resolve(import.meta.dirname, "..");
+const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const startEnvFile = resolve(root, ".env.local");
+if (mode === "start" && existsSync(startEnvFile)) {
+  process.loadEnvFile(startEnvFile);
+}
 const nextBin = resolve(root, "node_modules/next/dist/bin/next");
 const standaloneRoot = resolve(root, ".next/standalone");
 const standaloneServer = resolve(standaloneRoot, "server.js");
@@ -26,10 +31,20 @@ const next = spawn(process.execPath, useStandalone
   env: serverEnvironment,
   stdio: "inherit"
 });
-const worker = spawn(process.execPath, ["--env-file-if-exists=.env.local", "src/worker-multi.mjs"], {
+const envFileArgs = process.env.QQ_LOCAL_DEBUG === "1" ? [] : ["--env-file-if-exists=.env.local"];
+const worker = spawn(process.execPath, [...envFileArgs, "src/worker-multi.mjs"], {
   cwd: root,
   env: process.env,
   stdio: "inherit"
+});
+// The QQ bridge is optional. A QQ outage must not stop the web or sign worker.
+const qq = process.env.QQ_BOT_ENABLED === "1"
+  ? spawn(process.execPath, [...envFileArgs, "src/qq/run.mjs"], {
+    cwd: root, env: process.env, stdio: "inherit"
+  })
+  : null;
+qq?.on("exit", (code) => {
+  if (!stopping && code) console.error("[QQ] 接入进程已退出，网页和签到后台继续运行。");
 });
 
 let stopping = false;
@@ -38,6 +53,7 @@ function stop(exitCode = 0) {
   stopping = true;
   next.kill();
   worker.kill();
+  qq?.kill();
   process.exitCode = exitCode;
 }
 

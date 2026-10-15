@@ -1,7 +1,8 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { normalizeCourseWhitelist } from "../schedule.mjs";
+import { normalizeCourseName, normalizeCourseWhitelist } from "../schedule.mjs";
+import { withFileLock } from "./file-lock.mjs";
 
 // Runtime-only persistent storage; it must not be bundled into Next's server output.
 export const dataDirectory = resolve(/*turbopackIgnore: true*/ process.env.AUTO_SIGN_DATA_DIR || "data");
@@ -90,7 +91,8 @@ async function readRawSettings() {
       accounts: raw.accounts.map((account) => ({
         ...account,
         timing: normalizeSignTiming(account.timing),
-        courseWhitelist: normalizeCourseWhitelist(account.courseWhitelist)
+        courseWhitelist: normalizeCourseWhitelist(account.courseWhitelist),
+        courseTimingOverrides: normalizeCourseTimingOverrides(account.courseTimingOverrides)
       }))
     };
   }
@@ -104,6 +106,7 @@ async function readRawSettings() {
         credentials: raw.credentials,
         timing: { ...DEFAULT_SIGN_TIMING },
         courseWhitelist: [],
+        courseTimingOverrides: {},
         updatedAt: raw.updatedAt,
         refreshRequestedAt: raw.refreshRequestedAt
       }] : []
@@ -131,6 +134,36 @@ export function normalizeSignTiming(value, strict = false) {
   return { ...DEFAULT_SIGN_TIMING };
 }
 
+function normalizeCourseTimingOverrides(value, strict = false) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    if (strict) throw new Error("课程签到时间配置无效");
+    return {};
+  }
+  const entries = Object.entries(value);
+  if (strict && entries.length > 100) throw new Error("每个账号最多设置 100 门课程的签到时间");
+
+  const result = {};
+  const seen = new Set();
+  for (const [rawName, rawTiming] of entries) {
+    const courseName = normalizeCourseWhitelist([rawName])[0];
+    if (!courseName || courseName.length > 120) {
+      if (strict) throw new Error("课程名称无效或超过 120 个字符");
+      continue;
+    }
+    const key = normalizeCourseName(courseName);
+    if (seen.has(key)) continue;
+    try {
+      Object.defineProperty(result, courseName, {
+        value: normalizeSignTiming(rawTiming, true), enumerable: true, configurable: true, writable: true
+      });
+      seen.add(key);
+    } catch {
+      if (strict) throw new Error("课程签到时间配置无效");
+    }
+  }
+  return result;
+}
+
 function validateCredentials(username, password) {
   if (typeof username !== "string" || typeof password !== "string" || !username.trim() || !password) {
     throw new Error("请同时填写学号和密码");
@@ -141,7 +174,11 @@ function validateCredentials(username, password) {
   return username.trim();
 }
 
-export async function updateAutomationSettings({ action, accountId, username, password, enabled, timing, courseWhitelist }) {
+export async function updateAutomationSettings(options) {
+  return withFileLock(settingsFile, () => mutateAutomationSettings(options));
+}
+
+async function mutateAutomationSettings({ action, accountId, username, password, enabled, timing, courseWhitelist, courseName, resetCourseTimingOverrides }) {
   const current = await readRawSettings();
   const accounts = current.accounts.map((account) => ({ ...account }));
   const index = accounts.findIndex((account) => account.id === accountId);
@@ -149,16 +186,18 @@ export async function updateAutomationSettings({ action, accountId, username, pa
 
   if (action === "add") {
     const cleanUsername = validateCredentials(username, password);
+    if (enabled !== undefined && typeof enabled !== "boolean") throw new Error("账号开关状态无效");
     if (accounts.length >= 20) throw new Error("最多保存 20 个账号");
     if (accounts.some((account) => decryptCredentials(account.credentials)?.username === cleanUsername)) {
       throw new Error("该学号已添加");
     }
     accounts.push({
       id: randomBytes(12).toString("hex"),
-      enabled: true,
+      enabled: enabled ?? true,
       credentials: encryptCredentials(cleanUsername, password),
       timing: { ...DEFAULT_SIGN_TIMING },
       courseWhitelist: [],
+      courseTimingOverrides: {},
       updatedAt: now,
       refreshRequestedAt: null
     });
@@ -181,6 +220,25 @@ export async function updateAutomationSettings({ action, accountId, username, pa
   } else if (action === "timing") {
     if (index < 0) throw new Error("账号不存在");
     accounts[index].timing = normalizeSignTiming(timing, true);
+    if (resetCourseTimingOverrides === true) accounts[index].courseTimingOverrides = {};
+    accounts[index].updatedAt = now;
+  } else if (action === "course-timing" || action === "course-timing-clear") {
+    if (index < 0) throw new Error("账号不存在");
+    const normalizedName = typeof courseName === "string" ? normalizeCourseWhitelist([courseName])[0] : "";
+    if (!normalizedName || normalizedName.length > 120) throw new Error("课程名称无效或超过 120 个字符");
+    const overrides = normalizeCourseTimingOverrides(accounts[index].courseTimingOverrides);
+    const normalizedKey = normalizeCourseName(normalizedName);
+    for (const existingName of Object.keys(overrides)) {
+      if (normalizeCourseName(existingName) === normalizedKey) delete overrides[existingName];
+    }
+    if (action === "course-timing-clear" || timing === null) {
+      delete overrides[normalizedName];
+    } else {
+      Object.defineProperty(overrides, normalizedName, {
+        value: normalizeSignTiming(timing, true), enumerable: true, configurable: true, writable: true
+      });
+    }
+    accounts[index].courseTimingOverrides = normalizeCourseTimingOverrides(overrides, true);
     accounts[index].updatedAt = now;
   } else if (action === "whitelist") {
     if (index < 0) throw new Error("账号不存在");
@@ -210,6 +268,7 @@ export async function readPublicSettings() {
         enabled: account.enabled,
         timing: normalizeSignTiming(account.timing),
         courseWhitelist: normalizeCourseWhitelist(account.courseWhitelist),
+        courseTimingOverrides: normalizeCourseTimingOverrides(account.courseTimingOverrides),
         username,
         usernameHint: `${username.slice(0, 3)}***${username.slice(-3)}`
       };

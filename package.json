@@ -11,14 +11,21 @@
     "build": "next build",
     "start": "node scripts/run.mjs start",
     "build:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-portable.ps1",
+    "build:portable": "bash scripts/build-unix-portable.sh",
     "lint": "eslint src test next.config.ts eslint.config.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "dev:qq": "node scripts/qq-dev.mjs",
+    "qq:setup": "node scripts/qq-dev.mjs --init",
+    "qq:bot": "node scripts/qq-dev.mjs --bot",
+    "qq:build": "node scripts/qq-dev.mjs --build",
+    "qq:verify": "node scripts/verify-qq-production.mjs"
   },
   "dependencies": {
     "next": "16.3.5",
     "qrcode": "^1.5.4",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

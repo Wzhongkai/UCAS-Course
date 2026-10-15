@@ -1,10 +1,16 @@
 # UCAS Course
 
+QQ 机器人支持按学号绑定、私聊管理自动签到及定向通知，本地配置与指令见 [QQ 本地调试说明](QQ-LOCAL-DEBUG.md)。
+
 UCAS 课程查询、签到二维码和自动签到管理工具。项目提供一个统一网页，可查询课表、生成签到链接或二维码、手动发起签到，并为多个账号安排每日自动签到。
 
 > 本项目仅供学习、研究和个人使用。请遵守学校规章及相关系统的使用约定。签到受课程状态、网络、服务器时间和上游接口影响，程序不能保证每次成功，请以课程页面和教师要求为准。
 
 ## 功能
+
+- QQ 机器人私聊绑定学号，普通用户按本人绑定管理课程；管理员可进入管理员模式，按学号添加、删除和管理账号。
+- QQ 课表查询实时读取后台当天课程，返回课程名称、教师、时间、教室、计划签到时间和当前状态。
+- QQ 支持固定或随机提前时间、单课停用/恢复、通知全部/仅失败/关闭。
 
 - 使用学号、密码和日期查询课程。
 - 根据课程 ID 或 UUID 在浏览器本地生成动态二维码，不依赖第三方二维码服务。
@@ -68,24 +74,51 @@ npm run dev
 
 默认地址是 `http://127.0.0.1:3100`。通过访问密钥验证后，即可使用全部功能。
 
-## Windows x64 便携版
+## Windows、macOS、Linux 免安装便携包
 
-在 Windows x64 上可构建一个自带官方 Node.js 运行时的 ZIP：
+便携包内含对应系统的 Node.js 运行时，使用者无需安装 Node.js 或运行 `npm ci`。**每种系统和 CPU
+架构需要分别在对应的原生系统上构建**，不能把 Windows ZIP 直接复制到 macOS/Linux 使用。
+
+先在构建机器上执行 `npm ci`，再运行对应命令：
+
+| 构建机器 | 命令 | 输出 |
+| --- | --- | --- |
+| Windows x64 | `npm run build:windows` | `dist/UCAS-Course-Portable.zip` |
+| macOS x64/arm64 | `npm run build:portable` | `dist/UCAS-Course-Portable-macos-<架构>.tar.gz` |
+| Linux glibc x64/arm64 | `npm run build:portable` | `dist/UCAS-Course-Portable-linux-<架构>.tar.gz` |
+
+也可以在 GitHub Actions 中手动运行 **Build portable packages**，由原生运行器分别生成五种包，
+在该次运行的 Artifacts 中下载。便携包仍是本地网页：解压后 Windows 双击 `Start-UCAS-Course.cmd`；
+macOS 双击 `Start-UCAS-Course.command` 或从终端运行 `./Start-UCAS-Course.sh`；Linux 从终端
+运行 `./Start-UCAS-Course.sh`。macOS 包未经过 Apple 签名，首次打开可能需要用户自行确认。
+
+在 Windows + WSL 上也可运行 `wsl -- bash /mnt/d/UCAS-Course/scripts/build-linux-from-wsl.sh`，
+在隔离的 Linux 临时目录构建 Linux 包并复制回项目的 `dist/`；请按实际项目路径调整命令。
+
+便携版固定只监听 `127.0.0.1`，就绪后尝试自动打开浏览器；它使用本地桌面模式，不需要网站访问
+密钥。自动签到数据、日志和首次生成的加密密钥位于各系统的用户数据目录，详见包内
+`README-PORTABLE.txt`。**启动器窗口须保持运行**，关闭浏览器不会停止后台；关闭启动器或按
+`Ctrl+C` 会清理网页和后台进程。便携包不能作为公网服务部署。
+
+构建会校验官方 Node.js 运行时 SHA256，并审计打包目录，拒绝把 `.env.local`、`data` 和本机密钥
+带入包内。`LOCAL_DESKTOP_MODE=1` 仅供便携启动器使用，且只有在 `APP_HOST` 与 `HOSTNAME` 同时为
+`127.0.0.1` 时才有效；普通开发和生产部署仍要求 `UCAS_ACCESS_KEY`。
+
+## QQ 机器人
+
+QQ 接入使用官方 WebSocket 和 HTTP API，不依赖 Agent 或大模型。完整配置、管理员模式、绑定流程和指令清单见 [QQ 本地调试说明](QQ-LOCAL-DEBUG.md)。
+
+本地调试：
 
 ```powershell
-npm run build:windows
+npm run qq:setup
+# 在 qq.local.env 中填写 QQ_BOT_APP_SECRET 和管理员 OpenID
+npm run dev:qq
 ```
 
-生成的 `dist/UCAS-Course-Portable.zip` 解压后，双击 `Start-UCAS-Course.cmd` 即可运行。便携版
-固定只监听 `127.0.0.1`，服务就绪后自动打开浏览器；它使用本地桌面模式，不要求填写或生成
-`UCAS_ACCESS_KEY`。首次启动只会在 `%LOCALAPPDATA%\UCAS-Course\secrets.env` 生成
-`AUTO_SIGN_SECRET`，自动签到数据和日志放在该目录下的 `data` 子目录。关闭启动器命令窗口或
-按 `Ctrl+C` 会清理网页与后台进程。请不要把该目录中的密钥或数据文件放入项目、Git 或 ZIP。
+普通用户绑定后可直接发送 `查询课表`、`开启打卡`、`停止打卡 高等数学`、`签到时间 所有 随机 5 10`、`通知 全部`。管理员默认按本人模式操作；发送 `进入管理员模式` 后，账号指令必须带学号，并可使用 `添加学号` 和 `删除学号`。
 
-便携包构建会下载固定版本的官方 Windows x64 Node.js，并在打包前校验 SHA256；构建审计会拒绝
-`.env.local`、`data`、运行时配置和本机密钥进入包内。`LOCAL_DESKTOP_MODE=1` 仅供便携启动器
-使用，且只有在 `APP_HOST` 与 `HOSTNAME` 同时为 `127.0.0.1` 时才有效；普通开发和生产部署仍
-要求 `UCAS_ACCESS_KEY`。构建脚本只接受原生 Windows x64 环境，不会伪造其他架构的包。
+生产环境需要同时运行网页、自动签到 worker 和 QQ 进程，并把 `QQ_BOT_ENABLED`、`QQ_BOT_APP_ID`、`QQ_BOT_APP_SECRET`、`QQ_BOT_ADMIN_OPENIDS` 放入受保护的环境文件。不要把 `qq.local.env`、`.env.local`、`data/` 或服务器环境文件提交到 Git。
 
 ## 自动签到使用
 

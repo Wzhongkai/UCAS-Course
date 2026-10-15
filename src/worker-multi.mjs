@@ -4,7 +4,9 @@ import { resolve } from "node:path";
 import { readAutomationSettings, writeWorkerStatus, readWorkerEvents, writeWorkerEvents, encryptionReady, dataDirectory } from "./automation/store.mjs";
 import { accessReady } from "./automation/auth.mjs";
 import { UcasClient } from "./ucas.mjs";
-import { filterCoursesByWhitelist, scheduleOutcome, shanghaiDate, signTargetForAttempt, signWindow, timeAtSix } from "./schedule.mjs";
+import { filterCoursesByWhitelist, resolveCourseTiming, scheduleOutcome, shanghaiDate, signTargetForAttempt, signWindow, timeAtSix } from "./schedule.mjs";
+import { createQqStore } from "./qq/store.mjs";
+import { expiredNotification, scheduleErrorNotification, successNotification, upcomingNotification } from "./qq/events.mjs";
 
 const completedFile = resolve(dataDirectory, "completed.json");
 const logFile = resolve(dataDirectory, "auto-sign.log");
@@ -17,6 +19,8 @@ let busy = false;
 let logWrite = Promise.resolve();
 let completedWrite = Promise.resolve();
 let recentEvents = [];
+let qqStore;
+let qqEnqueueErrorLogged = false;
 
 function hint(username) {
   return `${username.slice(0, 3)}***${username.slice(-3)}`;
@@ -49,6 +53,28 @@ function completionKey(state, group) {
   return state.id === "legacy" ? group.key : `${state.id}:${group.key}`;
 }
 
+function signWindowForGroup(state, group) {
+  const timing = resolveCourseTiming(state.timing, state.courseTimingOverrides, group.first.courseName);
+  return signWindow(group, timing, state.id);
+}
+
+function qqNotificationsEnabled() {
+  return process.env.QQ_BOT_ENABLED === "1" && Boolean(process.env.QQ_BOT_APP_ID?.trim());
+}
+
+async function enqueueQqNotification(event) {
+  if (!qqNotificationsEnabled()) return;
+  try {
+    qqStore ??= createQqStore();
+    await qqStore.enqueueNotification(event);
+  } catch {
+    if (!qqEnqueueErrorLogged) {
+      qqEnqueueErrorLogged = true;
+      log("QQ 通知入队失败，签到任务继续运行。");
+    }
+  }
+}
+
 async function loadCompleted() {
   try {
     const data = JSON.parse(await readFile(completedFile, "utf8"));
@@ -74,14 +100,24 @@ async function saveCompleted() {
   await completedWrite;
 }
 
-async function markCompleted(state, group, message) {
+async function markCompleted(state, group, message, notificationSource = null) {
   const key = completionKey(state, group);
-  if (completed.has(key)) return;
-  completed.add(key);
   state.messages.set(group.key, message);
-  log(`${label(state, group)}：${message}。同一时间段的其他课程入口不再尝试。`);
-  try { await saveCompleted(); }
-  catch { log("签到记录保存失败，本次运行仍会停止重试。"); }
+  if (!completed.has(key)) {
+    completed.add(key);
+    log(`${label(state, group)}：${message}。同一时间段的其他课程入口不再尝试。`);
+    try { await saveCompleted(); }
+    catch { log("签到记录保存失败，本次运行仍会停止重试。"); }
+  }
+  if (notificationSource) {
+    await enqueueQqNotification(successNotification({
+      accountId: state.id,
+      completionKey: key,
+      courseName: group.first.courseName,
+      accountHint: state.usernameHint,
+      source: notificationSource
+    }));
+  }
 }
 
 function createState(account) {
@@ -92,6 +128,7 @@ function createState(account) {
     refreshVersion: account.refreshRequestedAt,
     enabled: Boolean(account.enabled),
     timing: account.timing,
+    courseTimingOverrides: account.courseTimingOverrides ?? {},
     courseWhitelist: account.courseWhitelist,
     client: account.enabled ? new UcasClient(account.credentials) : null,
     activeDate: "",
@@ -106,6 +143,7 @@ function createState(account) {
     nextAttemptAt: new Map(),
     messages: new Map(),
     expired: new Set(),
+    reminded: new Set(),
     forceRefresh: false,
     allDoneLogged: false
   };
@@ -163,6 +201,7 @@ async function refreshSchedule(state, now) {
     state.nextAttemptAt.clear();
     state.messages.clear();
     state.expired.clear();
+    state.reminded.clear();
     state.lastScheduleAt = Date.now();
     state.nextScheduleAt = timeAtSix(shanghaiDate(now + 24 * 60 * 60_000));
     state.scheduleState = rawCourses.length > 0 && courses.length === 0 ? "no_matching_courses" : outcome.state;
@@ -177,7 +216,7 @@ async function refreshSchedule(state, now) {
     }
     for (const group of state.groups) {
       if (group.signTargets.some((course) => course.signStatus === "1")) {
-        await markCompleted(state, group, "同一时间段的课表入口显示已签到");
+        await markCompleted(state, group, "同一时间段的课表入口显示已签到", "schedule");
       }
     }
   } catch (error) {
@@ -186,6 +225,11 @@ async function refreshSchedule(state, now) {
     state.scheduleState = "error";
     state.lastError = safeText(error instanceof Error ? error.message : "课表查询失败");
     log(`${state.usernameHint}：课表查询失败：${state.lastError}；5 分钟后重试。`);
+    await enqueueQqNotification(scheduleErrorNotification({
+      accountId: state.id,
+      date: state.activeDate,
+      accountHint: state.usernameHint
+    }));
   }
 }
 
@@ -214,7 +258,7 @@ async function attemptSign(state, group) {
     const timestamp = await timestampForSign(state);
     const result = await state.client.sign(target.id, timestamp);
     if (result?.STATUS === "0" && result?.result?.stuSignStatus === "1") {
-      await markCompleted(state, group, `第 ${count} 次尝试成功，课程入口 ${target.id}${result.result.stuSignId ? `，记录 ${result.result.stuSignId}` : ""}`);
+      await markCompleted(state, group, `第 ${count} 次尝试成功，课程入口 ${target.id}${result.result.stuSignId ? `，记录 ${result.result.stuSignId}` : ""}`, "attempt");
       return;
     }
     const reason = result?.result?.msg ?? result?.ERRMSG ?? result?.msg ?? result?.message ?? "上游未确认成功";
@@ -243,6 +287,7 @@ async function tickAccount(state, now) {
     state.nextAttemptAt.clear();
     state.messages.clear();
     state.expired.clear();
+    state.reminded.clear();
     state.allDoneLogged = false;
     state.nextScheduleAt = state.forceRefresh || now >= timeAtSix(today) ? now : timeAtSix(today);
     log(`${state.usernameHint} · ${today}：${state.nextScheduleAt === now ? "准备查询当天课表" : "等待 06:00 查询课表"}。`);
@@ -260,15 +305,32 @@ async function tickAccount(state, now) {
   }
   for (const group of state.groups) {
     if (completed.has(completionKey(state, group))) continue;
-    const window = signWindow(group, state.timing, state.id);
+    const window = signWindowForGroup(state, group);
     const currentTime = Date.now();
     if (currentTime > window.stopAt) {
       if (!state.expired.has(group.key) && currentTime >= window.prepareAt) {
         state.expired.add(group.key);
         state.messages.set(group.key, "第一节课已结束，请人工核查");
         log(`${label(state, group)}：第一节课已结束，停止尝试。`);
+        await enqueueQqNotification(expiredNotification({
+          accountId: state.id,
+          completionKey: completionKey(state, group),
+          courseName: group.first.courseName,
+          accountHint: state.usernameHint
+        }));
       }
       continue;
+    }
+    if (!state.reminded.has(group.key) && currentTime >= window.attemptAt - 60_000) {
+      state.reminded.add(group.key);
+      await enqueueQqNotification(upcomingNotification({
+        accountId: state.id,
+        completionKey: completionKey(state, group),
+        courseName: group.first.courseName,
+        accountHint: state.usernameHint,
+        attemptAt: window.attemptAt,
+        stopAt: window.stopAt
+      }));
     }
     if (currentTime < window.attemptAt || currentTime < (state.nextAttemptAt.get(group.key) ?? 0)) continue;
     await attemptSign(state, group);
@@ -277,7 +339,7 @@ async function tickAccount(state, now) {
 
 function publicPlan(state, now) {
   return state.groups.map((group) => {
-    const window = signWindow(group, state.timing, state.id);
+    const window = signWindowForGroup(state, group);
     let status = "待开始";
     if (completed.has(completionKey(state, group))) status = "已签到";
     else if (now > window.stopAt) status = "未成功，已停止";
@@ -328,10 +390,15 @@ async function tick() {
   if (now - lastStatusAt >= 3_000) await writeStatus(Date.now());
 }
 
+const lockPort = Number(process.env.AUTO_SIGN_LOCK_PORT || 43857);
+if (!Number.isInteger(lockPort) || lockPort < 1 || lockPort > 65_535) {
+  console.error("后台任务无法启动：AUTO_SIGN_LOCK_PORT 必须是 1 到 65535 的整数。");
+  process.exit(1);
+}
 const lock = createServer();
 await new Promise((resolve, reject) => {
   lock.once("error", reject);
-  lock.listen(43857, "127.0.0.1", resolve);
+  lock.listen(lockPort, "127.0.0.1", resolve);
 }).catch((error) => {
   console.error(`后台任务无法启动（可能已有一个实例）：${error.message}`);
   process.exit(1);

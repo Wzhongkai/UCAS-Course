@@ -1,0 +1,48 @@
+name: Build portable packages
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x64
+            command: npm run build:windows
+          - os: macos-15-intel
+            name: macos-x64
+            command: npm run build:portable
+          - os: macos-15
+            name: macos-arm64
+            command: npm run build:portable
+          - os: ubuntu-24.04
+            name: linux-x64
+            command: npm run build:portable
+          - os: ubuntu-24.04-arm
+            name: linux-arm64
+            command: npm run build:portable
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+          cache: npm
+      - run: npm ci
+      - run: ${{ matrix.command }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UCAS-Course-${{ matrix.name }}
+          path: |
+            dist/UCAS-Course-Portable.zip
+            dist/UCAS-Course-Portable.zip.sha256
+            dist/UCAS-Course-Portable-*.tar.gz
+            dist/UCAS-Course-Portable-*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30

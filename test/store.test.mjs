@@ -23,11 +23,13 @@ test("多账号配置加密保存，管理状态不泄露密码并兼容旧账�
     assert.deepEqual(settings.accounts[0].timing, {
       mode: "fixed", fixedMinutes: 10, minMinutes: 10, maxMinutes: 20
     });
+    assert.deepEqual(settings.accounts[0].courseTimingOverrides, {});
     assert.ok(settings.accounts[0].refreshRequestedAt);
     const publicSettings = await store.readPublicSettings();
     assert.equal(publicSettings.accounts.length, 1);
     assert.equal(publicSettings.accounts[0].username, "20260001");
     assert.deepEqual(publicSettings.accounts[0].courseWhitelist, []);
+    assert.deepEqual(publicSettings.accounts[0].courseTimingOverrides, {});
     assert.equal(JSON.stringify(publicSettings).includes("test-secret"), false);
     await store.updateAutomationSettings({
       action: "timing",
@@ -37,6 +39,49 @@ test("多账号配置加密保存，管理状态不泄露密码并兼容旧账�
     assert.deepEqual((await store.readPublicSettings()).accounts[0].timing, {
       mode: "random", fixedMinutes: 10, minMinutes: 12, maxMinutes: 24
     });
+    await store.updateAutomationSettings({
+      action: "course-timing", accountId: firstId, courseName: "  高等  数学 ",
+      timing: { mode: "fixed", fixedMinutes: 18 }
+    });
+    const courseTiming = { "高等 数学": { mode: "fixed", fixedMinutes: 18, minMinutes: 10, maxMinutes: 20 } };
+    assert.deepEqual((await store.readAutomationSettings()).accounts[0].courseTimingOverrides, courseTiming);
+    assert.deepEqual((await store.readPublicSettings()).accounts[0].courseTimingOverrides, courseTiming);
+    await store.updateAutomationSettings({
+      action: "course-timing", accountId: firstId, courseName: "高等 数学",
+      timing: { mode: "random", minMinutes: 9, maxMinutes: 15 }
+    });
+    assert.deepEqual((await store.readPublicSettings()).accounts[0].courseTimingOverrides["高等 数学"], {
+      mode: "random", fixedMinutes: 10, minMinutes: 9, maxMinutes: 15
+    });
+    await store.updateAutomationSettings({
+      action: "timing", accountId: firstId,
+      timing: { mode: "fixed", fixedMinutes: 22 }
+    });
+    assert.deepEqual((await store.readPublicSettings()).accounts[0].courseTimingOverrides["高等 数学"], {
+      mode: "random", fixedMinutes: 10, minMinutes: 9, maxMinutes: 15
+    }, "更新全局时间时应保留课程覆盖");
+    await store.updateAutomationSettings({
+      action: "timing", accountId: firstId, resetCourseTimingOverrides: true,
+      timing: { mode: "fixed", fixedMinutes: 16 }
+    });
+    assert.deepEqual((await store.readPublicSettings()).accounts[0].timing, {
+      mode: "fixed", fixedMinutes: 16, minMinutes: 10, maxMinutes: 20
+    });
+    assert.deepEqual((await store.readPublicSettings()).accounts[0].courseTimingOverrides, {}, "显式全局重置应清除单课覆盖");
+    await store.updateAutomationSettings({
+      action: "course-timing", accountId: firstId, courseName: "高等 数学",
+      timing: { mode: "fixed", fixedMinutes: 18 }
+    });
+    await store.updateAutomationSettings({ action: "course-timing-clear", accountId: firstId, courseName: "高等 数学" });
+    assert.deepEqual((await store.readPublicSettings()).accounts[0].courseTimingOverrides, {});
+    await assert.rejects(store.updateAutomationSettings({
+      action: "course-timing", accountId: firstId, courseName: "数学",
+      timing: { mode: "random", minMinutes: 30, maxMinutes: 10 }
+    }), /课程签到时间配置无效|签到时间配置无效/);
+    await assert.rejects(store.updateAutomationSettings({
+      action: "course-timing", accountId: firstId, courseName: "   ",
+      timing: { mode: "fixed", fixedMinutes: 12 }
+    }), /课程名称无效/);
     await store.updateAutomationSettings({
       action: "whitelist", accountId: firstId, courseWhitelist: ["  机器学习 ", "机器学习", "数据库  原理"]
     });
@@ -65,12 +110,19 @@ test("多账号配置加密保存，管理状态不泄露密码并兼容旧账�
     assert.equal(cleared.accounts.length, 1);
     const second = JSON.parse(await readFile(join(directory, "automation.json"), "utf8")).accounts[0];
     delete second.timing;
+    second.courseTimingOverrides = {
+      "  数据库  原理 ": { mode: "fixed", fixedMinutes: "18" },
+      "   ": { mode: "fixed", fixedMinutes: 15 }
+    };
     await writeFile(join(directory, "automation.json"), JSON.stringify({
       version: 2, accounts: [second], updatedAt: new Date().toISOString()
     }));
     const versionTwo = await store.readAutomationSettings();
     assert.equal(versionTwo.version, 3);
     assert.equal(versionTwo.accounts[0].timing.fixedMinutes, 10);
+    assert.deepEqual(versionTwo.accounts[0].courseTimingOverrides, {
+      "数据库 原理": { mode: "fixed", fixedMinutes: 18, minMinutes: 10, maxMinutes: 20 }
+    });
     await writeFile(join(directory, "automation.json"), JSON.stringify({
       version: 1, enabled: true, credentials: second.credentials,
       updatedAt: new Date().toISOString(), refreshRequestedAt: null
@@ -79,6 +131,7 @@ test("多账号配置加密保存，管理状态不泄露密码并兼容旧账�
     assert.equal(legacy.accounts[0].id, "legacy");
     assert.equal(legacy.accounts[0].credentials.username, "20260002");
     assert.equal(legacy.accounts[0].timing.fixedMinutes, 10);
+    assert.deepEqual(legacy.accounts[0].courseTimingOverrides, {});
     await store.updateAutomationSettings({ action: "add", username: "20260003", password: "third-secret" });
     assert.equal((await store.readPublicSettings()).accounts.length, 2);
   } finally {
