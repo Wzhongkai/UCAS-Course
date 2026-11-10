@@ -1,3 +1,5 @@
+import { normalizeCourseSchedId, normalizeCourseUuid } from "./sign-url.mjs";
+
 const SHANGHAI_OFFSET = "+08:00";
 
 export function shanghaiDate(timestamp = Date.now()) {
@@ -86,17 +88,21 @@ export function groupCourses(courses, date) {
   const valid = [];
 
   for (const course of Array.isArray(courses) ? courses : []) {
+    if (!course || typeof course !== "object") continue;
     const id = String(course.id ?? "").trim();
+    const uuid = normalizeCourseUuid(course.uuid);
+    const legacyId = normalizeCourseSchedId(id);
     const start = parseCourseTime(course.classBeginTime, date);
     const end = parseCourseTime(course.classEndTime, date);
-    if (!/^\d{7}$/.test(id) || start === null || end === null || end <= start) continue;
-    const duplicateKey = `${id}:${start}:${end}`;
+    if ((!legacyId && !uuid) || start === null || end === null || end <= start) continue;
+    const duplicateKey = `${legacyId ?? ""}:${uuid ?? ""}:${start}:${end}`;
     if (seen.has(duplicateKey)) continue;
     seen.add(duplicateKey);
-    valid.push({ ...course, id, start, end });
+    valid.push({ ...course, id, uuid, legacyId, start, end });
   }
 
-  valid.sort((a, b) => a.start - b.start || a.end - b.end || courseName(a).localeCompare(courseName(b), "zh-CN") || a.id.localeCompare(b.id));
+  valid.sort((a, b) => a.start - b.start || a.end - b.end || courseName(a).localeCompare(courseName(b), "zh-CN")
+    || Number(!a.legacyId) - Number(!b.legacyId) || (a.legacyId || a.uuid).localeCompare(b.legacyId || b.uuid));
 
   const slots = [];
   for (const course of valid) {
@@ -110,10 +116,17 @@ export function groupCourses(courses, date) {
 
   return slots.map((slot) => {
     const first = slot.alternatives[0];
+    const uuidTargets = new Map();
+    const numericTargets = new Map();
+    for (const course of slot.alternatives) {
+      if (course.uuid && !uuidTargets.has(course.uuid)) uuidTargets.set(course.uuid, course);
+      if (course.legacyId && !numericTargets.has(course.legacyId)) numericTargets.set(course.legacyId, course);
+    }
     return {
-      key: `${date}:${first.id}:${slot.start}`,
+      // Existing completion records and randomized times still use the old slot key.
+      key: `${date}:${first.legacyId || first.uuid}:${slot.start}`,
       first,
-      signTargets: [...slot.alternatives],
+      signTargets: [...(uuidTargets.size ? uuidTargets : numericTargets).values()],
       start: slot.start,
       firstEnd: slot.end,
       end: slot.end,
@@ -165,9 +178,7 @@ export function signWindow(group, timing, accountSeed = "") {
 }
 
 export function signTargetForAttempt(group, attemptNumber) {
-  const targets = Array.isArray(group?.signTargets) && group.signTargets.length > 0
-    ? group.signTargets
-    : group?.first ? [group.first] : [];
+  const targets = group?.signTargets ?? [];
   if (targets.length === 0) return null;
   const index = Math.max(0, Number(attemptNumber) - 1) % targets.length;
   return targets[index];

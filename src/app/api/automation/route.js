@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { accessReady, authorized, sameOrigin } from "../../../automation/auth.mjs";
 import { encryptionReady, readPublicSettings, readWorkerStatus, readWorkerEvents, updateAutomationSettings } from "../../../automation/store.mjs";
+import { createQqStore } from "../../../qq/store.mjs";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,6 +42,7 @@ export async function POST(request) {
       courseWhitelist: body?.courseWhitelist,
       courseName: body?.courseName
     });
+    if (body?.action === "remove") await createQqStore().unbind(body.accountId);
     return NextResponse.json({ success: true, settings: await readPublicSettings() });
   } catch (error) {
     return NextResponse.json({ message: error instanceof Error ? error.message : "保存失败" }, { status: 400 });

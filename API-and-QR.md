@@ -15,7 +15,7 @@
 
 ## 一、项目提供给前端的 API
 
-以下路径相对于网站基地址。本地开发时通常是 `http://127.0.0.1:3100`；如果部署在示例地址 `https://example.com/course`，查询课程的完整地址就是 `https://example.com/course/api/course-uuid/query`。所有项目 API 都需要先通过网站访问密钥验证并携带 HttpOnly Cookie。
+以下路径相对于网站基地址。本地开发时通常是 `http://127.0.0.1:3100`；如果部署在示例地址 `https://example.com/course`，查询课程的完整地址就是 `https://example.com/course/api/course-uuid/query`。普通网页部署先调用 `/api/access` 验证网站访问密钥，之后访问受保护的 API 时携带返回的 HttpOnly Cookie。
 
 ### 1. 查询课程：`POST /api/course-uuid/query`
 
@@ -56,6 +56,13 @@
 
 代码位置：[`src/app/api/course-uuid/query/route.ts`](src/app/api/course-uuid/query/route.ts)、[`src/app/page.tsx`](src/app/page.tsx)。
 
+同一条课表记录可以包含两种编号。`uuid` 直接用作 `timeTableId`，不需要从 7 位编号推算，也不需要先扫二维码。
+
+| 课表字段 | 签到参数 | 使用条件 |
+| --- | --- | --- |
+| `uuid` | `timeTableId` | 优先使用 32 位十六进制 UUID |
+| `id` | `courseSchedId` | 没有有效 UUID 时使用 7 位数字场次 ID |
+
 ### 2. 获取时间戳：`GET /api/course-uuid/timestamp`
 
 无请求体。服务端转而向 UCAS 时间戳接口发起请求，成功时返回：
@@ -79,12 +86,13 @@
 {
   "username": "<学号>",
   "password": "<密码>",
-  "courseSchedId": "1234567",
+  "timeTableId": "00112233445566778899AABBCCDDEEFF",
   "timestamp": 1789380000000
 }
 ```
 
-- `courseSchedId` 必填，当前服务端仅接受**7 位数字**。服务端也读取 `timeTableId` 作为字段别名，但同样按 7 位数字校验。
+- 优先传 `timeTableId`，支持带连字符的 UUID；没有有效 UUID 时，传 `courseSchedId`。两个值都有效时只使用 UUID。
+- 回退发生在构造请求时。上游拒绝 UUID 请求后不会自动用数字 ID 再提交。为兼容旧请求，只有 `timeTableId` 字段且值是 7 位数字时，会按 `courseSchedId` 转发。
 - `timestamp` 可选；只有传入有限的 JSON 数字才采用该值，否则使用服务端当前的 `Date.now()`。
 - 服务端先登录，再调用 UCAS 签到接口，并在该上游请求中补充用户 `id` 和请求头 `sessionId`。
 - 前端点击“直接签到”时优先采用当前二维码链接中的时间戳；没有可用时间戳时，使用校准后的当前时间减去 3 秒。
@@ -173,12 +181,12 @@ User-Agent: student_5.0.1.2_android_12_20_100000000000000_110000
 只有调用项目的 `/api/course-uuid/sign` 且登录成功后才会发出：
 
 ```http
-GET https://iclass.ucas.edu.cn:8181/app/course/stu_scan_sign.action?courseSchedId=<7位课程ID>&timestamp=<毫秒时间戳>&id=<登录返回的result.id>
+GET https://iclass.ucas.edu.cn:8181/app/course/stu_scan_sign.action?timeTableId=<32位课程UUID>&timestamp=<毫秒时间戳>&id=<登录返回的result.id>
 sessionId: <登录返回的result.sessionId>
 User-Agent: student_5.0.1.2_android_12_20_100000000000000_110000
 ```
 
-`courseSchedId` 和 `id` 经 `encodeURIComponent` 放入查询字符串；无请求体。上游响应中，项目读取 `STATUS`、`result.stuSignId`、`result.stuSignStatus`，并按第一节所述转换为项目 API 响应。[实际请求代码](src/app/api/course-uuid/sign/route.ts)
+缺少有效 UUID 时，查询字符串使用 `courseSchedId=<7位课程ID>`。请求不带请求体。项目读取上游的 `STATUS`、`result.stuSignId`、`result.stuSignStatus`，并按第一节所述转换为项目 API 响应。[实际请求代码](src/app/api/course-uuid/sign/route.ts)
 
 ### 4. 获取 UCAS 时间戳
 
@@ -198,19 +206,19 @@ Connection: Keep-Alive
 
 以下是代码**构造但不会由项目自动发送**的 URL 文本。项目将它编码成二维码图片；扫码后的请求由扫码方发起，不属于本项目代码中的 `fetch`：
 
-**查询课程后选课，或手动输入数字 ID：**
-
-```text
-https://iclass.ucas.edu.cn:8181/app/course/stu_scan_sign.action?courseSchedId=<课程ID>&timestamp=<毫秒时间戳>
-```
-
-**手动输入 32 位十六进制 UUID：**
+**从课表选择带有效 UUID 的课程，或手动输入 UUID：**
 
 ```text
 https://iclass.ucas.edu.cn:8181/app/course/stu_scan_sign.action?timeTableId=<大写UUID>&timestamp=<毫秒时间戳>
 ```
 
-手动 UUID 可以带连字符；前端先去掉连字符，确认剩余部分是 32 位十六进制字符，再转为大写。手动数字 ID 接受任意长度的纯数字，但项目的“直接签到”API 只接受 7 位数字。二维码 URL 本身也不带用户 `id` 或 `sessionId`；它与服务端发起的直接签到请求不是完全相同的请求格式。
+**课表没有有效 UUID 时，或手动输入数字 ID：**
+
+```text
+https://iclass.ucas.edu.cn:8181/app/course/stu_scan_sign.action?courseSchedId=<7位课程ID>&timestamp=<毫秒时间戳>
+```
+
+手动输入支持 32 位十六进制 UUID（可带连字符）或 7 位数字 ID。UUID 在请求中统一为大写且不带连字符。二维码 URL 不带用户 `id` 或 `sessionId`。
 
 图片由浏览器本地的 `qrcode` 包生成，关键调用如下：
 
@@ -232,9 +240,8 @@ const imageDataUrl = await QRCode.toDataURL(signUrl, {
 3. 页面每 5 秒重新生成一次二维码及其 URL。
 4. 点击下载时另行生成图片，其 URL 使用“校准后的当前时间 + 10 秒”作为 `timestamp`。页面将其标为“10 秒有效”，但代码没有验证上游实际有效期。
 
-## 四、与现有 README 的差异及使用提醒
+## 四、使用提醒
 
-- README 中的直接签到示例使用 32 位 UUID `timeTableId`，但**当前签到路由只接受 7 位数字**。要调用 `POST /api/course-uuid/sign`，应使用数字 `courseSchedId`。
 - 生成二维码只是生成签到链接和图片，并不证明已经签到成功；应以上游签到响应中的状态为准。
 - 网页正常链路中，学号和密码由浏览器提交给项目服务端，再由项目服务端用于登录 UCAS；测试脚本则会直接向 UCAS 发送凭据。开发时应保护请求与部署环境，避免把真实凭据写入示例、日志或版本库。
 
@@ -256,4 +263,4 @@ const imageDataUrl = await QRCode.toDataURL(signUrl, {
 | `POST /api/automation` | 提交 `{ "action": "refresh", "accountId": "<账号ID>" }` 重新查询指定账号课表 |
 | `POST /api/automation` | 提交 `{ "action": "remove", "accountId": "<账号ID>" }` 移除账号并停止其后续任务 |
 
-自动签到后台进程不通过项目的 `/api/course-uuid/query`、`/api/course-uuid/sign` 代理，而是复用第二节列出的 UCAS 登录、课表、时间戳、签到请求格式，直接在服务器端发送。每个账号独立使用自己的登录会话和签到时间配置；固定模式按指定提前分钟数开始，随机模式则为每个账号和课程生成稳定的区间内时间点。到达计划时间后每隔至少 10 秒尝试签到。实测课表接口会用 HTTP 200、`STATUS="2"` 且不返回 `result` 表示当天无课；该响应以及成功的空数组都会标记为“今日无课”，直接等待次日 06:00。登录、网络、响应格式或其他业务状态错误才会在 5 分钟后重试。某账号所有课程都成功后停止该账号当天的尝试，第二天继续自动查询。同名且起止时间完全相同的多条课表记录会合并为一个目标，后台轮换其 `courseSchedId`，任意一个返回成功即停止整个目标；起止时间有任一不同就作为独立目标。[后台代码](src/worker-multi.mjs) · [接口代码](src/app/api/automation/route.js)
+自动签到后台进程不通过项目的 `/api/course-uuid/query`、`/api/course-uuid/sign` 代理，而是复用第二节列出的 UCAS 登录、课表、时间戳、签到请求格式，直接在服务器端发送。每个账号独立使用自己的登录会话和签到时间配置；固定模式按指定提前分钟数开始，随机模式则为每个账号和课程生成稳定的区间内时间点。到达计划时间后每隔至少 10 秒尝试签到。实测课表接口会用 HTTP 200、`STATUS="2"` 且不返回 `result` 表示当天无课；该响应以及成功的空数组都会标记为“今日无课”，直接等待次日 06:00。登录、网络、响应格式或其他业务状态错误才会在 5 分钟后重试。某账号所有课程都成功后停止该账号当天的尝试，第二天继续自动查询。同名且起止时间完全相同的多条课表记录会合并为一个目标，后台优先轮换该组的有效 UUID；全组都没有有效 UUID 时才轮换 7 位 `courseSchedId`。任意一个返回成功即停止整个目标，QQ 成功通知会显示实际使用的方法；起止时间有任一不同就作为独立目标。[后台代码](src/worker-multi.mjs) · [接口代码](src/app/api/automation/route.js)

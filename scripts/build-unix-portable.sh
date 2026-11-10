@@ -47,7 +47,7 @@ mkdir -p "$package_dir/.next/static" "$package_dir/runtime" "$package_dir/script
 cp -R .next/standalone/. "$package_dir/"
 cp -R .next/static/. "$package_dir/.next/static/"
 cp -R public "$package_dir/public"
-cp src/worker-multi.mjs src/ucas.mjs src/schedule.mjs "$package_dir/src/"
+cp src/worker-multi.mjs src/ucas.mjs src/schedule.mjs src/sign-url.mjs "$package_dir/src/"
 cp src/automation/*.mjs "$package_dir/src/automation/"
 cp src/qq/store.mjs src/qq/events.mjs src/qq/format.mjs "$package_dir/src/qq/"
 cp scripts/portable-launcher.mjs "$package_dir/scripts/"

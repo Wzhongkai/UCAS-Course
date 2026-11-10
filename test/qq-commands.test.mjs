@@ -51,6 +51,10 @@ function fixture() {
     ]
   };
   const counts = { publicSettings: 0, status: 0, events: 0 };
+  const recipients = (accountId) => {
+    const value = bindings.get(accountId);
+    return Array.isArray(value) ? value : value ? [value] : [];
+  };
   const store = {
     async isAdmin(userId) { return admins.has(userId); },
     async getAdminMode(userId) { return admins.has(userId) && adminModes.get(userId) === true; },
@@ -71,29 +75,35 @@ function fixture() {
     },
     async bind(userId, code) {
       const accountId = codes.get(code);
-      if (!accountId || bindings.has(accountId)) throw new Error("bad code");
+      if (!accountId) throw new Error("bad code");
+      await store.bindVerified(userId, accountId);
       codes.delete(code);
-      bindings.set(accountId, { userId, mode: "all" });
       return { accountId };
     },
-    async bindVerified(userId, accountId, { allowMultiple = false } = {}) {
-      const previous = bindings.get(accountId);
-      if (previous?.userId && previous.userId !== userId) throw new Error("账号已绑定其他用户");
-      if (!allowMultiple && [...bindings].some(([boundId, binding]) => binding.userId === userId && boundId !== accountId)) {
-        throw new Error("普通用户只能绑定一个账号");
+    async bindVerified(userId, accountId) {
+      if (recipients(accountId).some((binding) => binding.userId === userId)) return { accountId };
+      if ([...bindings.keys()].some((boundId) => boundId !== accountId && recipients(boundId).some((binding) => binding.userId === userId))) {
+        throw new Error("该 QQ 已绑定其他学号");
       }
-      if (!previous) bindings.set(accountId, { userId, mode: "all" });
+      bindings.set(accountId, [...recipients(accountId), { userId, mode: "all" }]);
       return { accountId };
     },
-    async getBinding(accountId) { return bindings.get(accountId) ?? null; },
-    async listBindings(userId) {
-      return [...bindings].filter(([, binding]) => binding.userId === userId)
-        .map(([accountId, binding]) => ({ accountId, ...binding }));
+    async getBindings(accountId) { return recipients(accountId); },
+    async getBinding(accountId, userId) {
+      const entries = recipients(accountId);
+      return userId === undefined ? entries.length === 1 ? entries[0] : null : entries.find((binding) => binding.userId === userId) ?? null;
     },
-    async unbind(accountId) { bindings.delete(accountId); },
-    async setPreference(accountId, mode) {
-      const binding = bindings.get(accountId);
-      if (binding) binding.mode = mode;
+    async listBindings(userId) {
+      return [...bindings.keys()].flatMap((accountId) => recipients(accountId).filter((binding) => binding.userId === userId)
+        .map((binding) => ({ accountId, ...binding })));
+    },
+    async unbind(accountId, userId) {
+      const remaining = userId === undefined ? [] : recipients(accountId).filter((binding) => binding.userId !== userId);
+      if (remaining.length) bindings.set(accountId, remaining);
+      else bindings.delete(accountId);
+    },
+    async setPreference(accountId, mode, userId) {
+      for (const binding of recipients(accountId)) if (userId === undefined || binding.userId === userId) binding.mode = mode;
     },
     async enqueueNotification(value) { queued.push(value); }
   };
@@ -187,7 +197,8 @@ test("普通用户只能读写自己的绑定账号，状态和课表按账号 I
   assert.doesNotMatch(status, /20260002|other account|global admin-only/u);
   const schedule = await f.handler({ userId: "qq-user-a", content: "课表" });
   assert.match(schedule, /课程 甲/u);
-  assert.match(schedule, /2026-10-15 09:00–10:00/u);
+  const today = shanghaiDate();
+  assert.ok(schedule.includes(`${today.slice(0, 4)}-${today.slice(4, 6)}-${today.slice(6, 8)} 09:00–10:00`));
   assert.doesNotMatch(schedule, /秘密课程乙|other account/u);
 
   const denied = await f.handler({ userId: "qq-user-a", content: "关闭打卡 20260002" });
@@ -222,27 +233,55 @@ test("自助绑定验证凭据后新账号保持暂停，已存在账号保留�
   assert.equal(f.verificationCalls.at(-1).password, newPassword);
 });
 
-test("自助绑定拒绝他人绑定的账号并限制普通用户绑定多个账号", async () => {
+test("同一学号支持多个 QQ，但每个 QQ 只能绑定一个学号", async () => {
   const f = fixture();
-  const claimed = await f.handler({ userId: "qq-user-b", content: "绑定学号 20260001 valid password" });
-  assert.match(claimed, /已绑定其他 QQ/u);
-  assert.deepEqual(await f.store.getBinding("account-a"), { userId: "qq-user-a", mode: "all" });
-  assert.equal(f.actions.some((action) => action.action === "password" && action.accountId === "account-a"), false);
+  const claimed = await f.handler({ userId: "qq-user-c", content: "绑定学号 20260001 valid password" });
+  assert.match(claimed, /绑定成功/u);
+  assert.deepEqual(await f.store.getBinding("account-a", "qq-user-a"), { userId: "qq-user-a", mode: "all" });
+  assert.deepEqual(await f.store.getBinding("account-a", "qq-user-c"), { userId: "qq-user-c", mode: "all" });
+  assert.match(await f.handler({ userId: "qq-user-c", content: "查询课表" }), /20260001/u);
 
   const multiple = await f.handler({ userId: "qq-user-a", content: "绑定学号 20260003 valid password" });
   assert.match(multiple, /只能绑定一个学号/u);
   assert.equal(f.accounts.some((account) => account.username === "20260003"), false);
 });
 
-test("并发自助绑定同一学号只允许一个 QQ 成功", async () => {
+test("并发自助绑定同一学号可全部成功且只创建一个账号", async () => {
   const f = fixture();
   const replies = await Promise.all([
     f.handler({ userId: "qq-race-a", content: "绑定学号 20260003 correct password" }),
     f.handler({ userId: "qq-race-b", content: "绑定学号 20260003 correct password" })
   ]);
-  assert.equal(replies.filter((reply) => /绑定成功/u.test(reply)).length, 1);
-  assert.equal(replies.filter((reply) => /已绑定其他 QQ/u.test(reply)).length, 1);
+  assert.equal(replies.filter((reply) => /绑定成功/u.test(reply)).length, 2);
+  assert.equal((await f.store.getBindings("account-3")).length, 2);
   assert.equal(f.accounts.filter((account) => account.username === "20260003").length, 1);
+});
+
+test("共享账号的查询和打卡设置共用，普通 QQ 的通知与解绑互相独立", async () => {
+  const f = fixture();
+  await f.handler({ userId: "qq-user-c", content: "绑定学号 20260001 valid password" });
+  assert.match(await f.handler({ userId: "qq-user-c", content: "通知 关闭" }), /仅修改你自己的/u);
+  assert.equal((await f.store.getBinding("account-a", "qq-user-a")).mode, "all");
+  assert.equal((await f.store.getBinding("account-a", "qq-user-c")).mode, "off");
+  await f.handler({ userId: "qq-user-a", content: "测试通知" });
+  assert.equal(f.queued.at(-1).userId, "qq-user-a");
+  await f.handler({ userId: "qq-user-c", content: "签到时间 所有 固定 14" });
+  assert.match(await f.handler({ userId: "qq-user-a", content: "状态" }), /固定 14 分钟/u);
+  const unbound = await f.handler({ userId: "qq-user-a", content: "解绑" });
+  assert.match(unbound, /仅解除你自己的绑定/u);
+  assert.equal(await f.store.getBinding("account-a", "qq-user-a"), null);
+  assert.equal((await f.store.getBinding("account-a", "qq-user-c")).mode, "off");
+  assert.match(await f.handler({ userId: "qq-user-c", content: "查询课表" }), /20260001/u);
+  assert.match(await f.handler({ userId: "qq-user-a", content: "查询课表" }), /还没有绑定/u);
+  assert.equal(f.accounts.find((account) => account.id === "account-a").enabled, true);
+});
+
+test("管理员也只能绑定一个学号，管理其他学号不需要额外绑定", async () => {
+  const f = fixture();
+  assert.match(await f.handler({ userId: "qq-admin", content: "绑定学号 20260001 valid password" }), /绑定成功/u);
+  assert.match(await f.handler({ userId: "qq-admin", content: "绑定学号 20260002 valid password" }), /每个 QQ 只能绑定一个/u);
+  assert.match(await f.handler({ userId: "qq-admin", content: "查询课表 20260002" }), /20260002/u);
+  assert.equal((await f.store.listBindings("qq-admin")).length, 1);
 });
 
 test("自助绑定验证失败按 QQ 限制每 15 分钟三次，且不创建账号", async () => {

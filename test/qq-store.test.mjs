@@ -59,13 +59,16 @@ test("QQ 存储持久化授权、绑定、去重和通知队列", async () => {
     await assert.rejects(store.bind("qq-user-a", firstCode.code), /无效或已过期/);
 
     const secondCode = await store.createBindingCode("20260002");
-    await store.bind("qq-user-a", secondCode.code);
-    assert.equal((await store.listBindings("qq-user-a")).length, 2);
+    await assert.rejects(store.bind("qq-user-a", secondCode.code), /该 QQ 已绑定其他学号/);
+    await store.bind("qq-user-d", secondCode.code);
+    assert.equal((await store.listBindings("qq-user-a")).length, 1);
 
     const replacementCode = await store.createBindingCode("20260001");
     await store.bind("qq-user-b", replacementCode.code);
+    assert.equal((await store.getBindings("20260001")).length, 2);
+    await store.unbind("20260001", "qq-user-a");
     assert.deepEqual(await store.getBinding("20260001"), { userId: "qq-user-b", mode: "all" });
-    assert.deepEqual((await store.listBindings("qq-user-a")).map(({ accountId }) => accountId), ["20260002"]);
+    assert.deepEqual(await store.listBindings("qq-user-a"), []);
 
     await store.setPreference("20260002", "failure");
     assert.equal(await store.enqueueNotification({ id: "filtered-success", accountId: "20260002", kind: "success", content: "ok" }), false);
@@ -157,7 +160,7 @@ test("QQ 存储持久化授权、绑定、去重和通知队列", async () => {
   }
 });
 
-test("已验证绑定保持学号归属，并默认限制每个 QQ 绑定一个学号", async () => {
+test("已验证绑定支持共享学号，所有角色的 QQ 只能绑定一个学号", async () => {
   const directory = await mkdtemp(join(tmpdir(), "ucas-qq-verified-bind-"));
   const store = createQqStore({ directory, appId: "verified", adminOpenids: [] });
   try {
@@ -165,11 +168,13 @@ test("已验证绑定保持学号归属，并默认限制每个 QQ 绑定一个�
     await store.setPreference("20260001", "failure");
     assert.deepEqual(await store.bindVerified("qq-user-a", "20260001"), { accountId: "20260001" });
     assert.deepEqual(await store.getBinding("20260001"), { userId: "qq-user-a", mode: "failure" }, "重复绑定应保留偏好");
-    await assert.rejects(store.bindVerified("qq-user-b", "20260001"), /已绑定其他 QQ/);
+    await store.bindVerified("qq-user-b", "20260001");
+    assert.deepEqual(await store.getBinding("20260001", "qq-user-a"), { userId: "qq-user-a", mode: "failure" });
+    assert.deepEqual(await store.getBinding("20260001", "qq-user-b"), { userId: "qq-user-b", mode: "all" });
     await assert.rejects(store.bindVerified("qq-user-a", "20260002"), /该 QQ 已绑定其他学号/);
-    assert.deepEqual(await store.bindVerified("qq-user-a", "20260002", { allowMultiple: true }), { accountId: "20260002" });
-    await assert.rejects(store.bindVerified("qq-user-b", "20260002", { allowMultiple: true }), /已绑定其他 QQ/);
-    assert.deepEqual((await store.listBindings("qq-user-a")).map(({ accountId }) => accountId), ["20260001", "20260002"]);
+    await assert.rejects(store.bindVerified("qq-user-a", "20260002", { allowMultiple: true }), /该 QQ 已绑定其他学号/);
+    await assert.rejects(store.bindVerified("qq-user-b", "20260002", { allowMultiple: true }), /该 QQ 已绑定其他学号/);
+    assert.deepEqual((await store.listBindings("qq-user-a")).map(({ accountId }) => accountId), ["20260001"]);
   } finally {
     if (resolve(directory).startsWith(resolve(tmpdir()))) await rm(directory, { recursive: true, force: true });
   }

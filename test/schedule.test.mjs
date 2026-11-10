@@ -53,6 +53,18 @@ test("同名同时间但老师不同的记录作为候选签到入口", () => {
   assert.equal(signTargetForAttempt(informationRetrieval, 3).id, "1234567");
 });
 
+test("同一场课程优先轮换有效 UUID，无 UUID 才回退数字 ID，并保留原任务键", () => {
+  const base = course("1234567", "08:00:00", "09:40:00");
+  const alternate = { ...base, id: "1234568", uuid: "00112233-4455-6677-8899-aabbccddeeff" };
+  const uuidOnly = { ...base, id: "", uuid: "00112233445566778899AABBCCDDEEFF" };
+  const [legacy] = groupCourses([base, { ...alternate, uuid: "bad" }], date);
+  const [preferred] = groupCourses([base, alternate, uuidOnly], date);
+  assert.equal(preferred.key, legacy.key);
+  assert.deepEqual(preferred.signTargets.map(target => target.uuid), ["00112233445566778899AABBCCDDEEFF"]);
+  assert.deepEqual(legacy.signTargets.map(target => target.legacyId), ["1234567", "1234568"]);
+  assert.equal(signTargetForAttempt(groupCourses([uuidOnly], date)[0], 1).uuid, "00112233445566778899AABBCCDDEEFF");
+});
+
 test("准备、开始尝试和停止时间相对第一节课计算", () => {
   const [group] = groupCourses([course("1234567", "08:00:00", "09:40:00")], date);
   assert.deepEqual(signWindow(group), {

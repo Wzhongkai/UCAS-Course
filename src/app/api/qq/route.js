@@ -40,6 +40,7 @@ export async function GET(request) {
     const [summary, runtimeStatus] = await Promise.all([store.getSummary(), store.getRuntimeStatus()]);
     const bindings = Array.isArray(summary?.bindings) ? summary.bindings.map((binding) => ({
       accountId: typeof binding.accountId === "string" ? binding.accountId : "",
+      bindingId: typeof binding.bindingId === "string" ? binding.bindingId : "",
       bound: binding.bound === true,
       mode: ["all", "failure", "off"].includes(binding.mode) ? binding.mode : "all",
       userHint: typeof binding.userHint === "string" ? binding.userHint.slice(0, 80) : null
@@ -65,9 +66,12 @@ export async function POST(request) {
   try { body = await request.json(); }
   catch { return NextResponse.json({ message: "请求格式错误" }, { status: 400, headers: NO_STORE }); }
 
-  const { action, accountId, mode } = body ?? {};
+  const { action, accountId, mode, bindingId } = body ?? {};
   if (typeof accountId !== "string" || !accountId) {
     return NextResponse.json({ message: "账号无效" }, { status: 400, headers: NO_STORE });
+  }
+  if (bindingId !== undefined && (typeof bindingId !== "string" || !/^[a-f0-9]{24}$/u.test(bindingId))) {
+    return NextResponse.json({ message: "绑定标识无效" }, { status: 400, headers: NO_STORE });
   }
 
   try {
@@ -77,19 +81,25 @@ export async function POST(request) {
     }
 
     const store = createQqStore();
+    let userId;
+    if (bindingId !== undefined) {
+      const binding = (await store.getBindings(accountId)).find((entry) => entry.bindingId === bindingId);
+      if (!binding) return NextResponse.json({ message: "该 QQ 绑定不存在，请刷新页面" }, { status: 404, headers: NO_STORE });
+      userId = binding.userId;
+    }
     if (action === "code") {
       const bindingCode = await store.createBindingCode(accountId);
       return NextResponse.json({ code: bindingCode.code, expiresAt: bindingCode.expiresAt }, { headers: NO_STORE });
     }
     if (action === "unbind") {
-      await store.unbind(accountId);
+      await store.unbind(accountId, userId);
       return NextResponse.json({ success: true }, { headers: NO_STORE });
     }
     if (action === "preference") {
       if (!["all", "failure", "off"].includes(mode)) {
         return NextResponse.json({ message: "通知模式无效" }, { status: 400, headers: NO_STORE });
       }
-      await store.setPreference(accountId, mode);
+      await store.setPreference(accountId, mode, userId);
       return NextResponse.json({ success: true }, { headers: NO_STORE });
     }
     return NextResponse.json({ message: "未知操作" }, { status: 400, headers: NO_STORE });

@@ -30,7 +30,7 @@ type AutomationResponse = {
   events: { at: string; message: string }[];
   message?: string;
 };
-type QqBinding = { accountId: string; bound: boolean; mode: "all" | "failure" | "off"; userHint: string | null };
+type QqBinding = { accountId: string; bindingId: string; bound: boolean; mode: "all" | "failure" | "off"; userHint: string | null };
 type QqStatus = {
   bindings: QqBinding[];
   pending: number;
@@ -224,14 +224,14 @@ export default function AutomationPanelMulti() {
     }
   }
 
-  async function onUnbindQq(account: Account) {
-    if (!window.confirm(`确定解除 ${account.username} 的 QQ 绑定吗？`)) return;
+  async function onUnbindQq(account: Account, binding?: QqBinding) {
+    if (!window.confirm(`确定解除 ${account.username} 的${binding ? "这个" : "全部"} QQ 绑定吗？`)) return;
     setBindingCodes((current) => {
       const next = { ...current };
       delete next[account.id];
       return next;
     });
-    await mutateQq({ action: "unbind", accountId: account.id }, "QQ 已解绑。");
+    await mutateQq({ action: "unbind", accountId: account.id, ...(binding ? { bindingId: binding.bindingId } : {}) }, "QQ 已解绑。");
   }
 
   async function onAdd(event: FormEvent<HTMLFormElement>) {
@@ -355,30 +355,35 @@ export default function AutomationPanelMulti() {
             </div>
             <div className="mt-5 rounded-xl border border-[color:var(--line)] bg-[color:var(--surface-raised)] p-4">
               {(() => {
-                const binding = qq?.bindings?.find((item) => item.accountId === account.id);
+                const bindings = qq?.bindings?.filter((item) => item.accountId === account.id && item.bound) ?? [];
                 const code = bindingCodes[account.id];
                 const busy = Boolean(qqBusy[account.id]);
                 return (
                   <>
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <h4 className="font-semibold">QQ 通知</h4>
-                      <span className="text-xs text-[color:var(--muted)]">{binding?.bound ? `已绑定${binding.userHint ? `：${binding.userHint}` : ""}` : "未绑定"}</span>
+                      <span className="text-xs text-[color:var(--muted)]">{bindings.length ? `已绑定 ${bindings.length} 个 QQ` : "未绑定"}</span>
                     </div>
                     <p className="mt-2 text-xs leading-5 text-[color:var(--muted)]">普通用户在机器人私聊中发送“绑定学号 学号 密码”自助验证；下方绑定码供管理员管理恢复使用。</p>
-                    <label className="mt-3 block text-sm font-semibold">通知模式
-                      <select value={binding?.mode ?? "all"} disabled={busy || !binding?.bound}
-                        onChange={(event) => void mutateQq({ action: "preference", accountId: account.id, mode: event.target.value }, "QQ 通知模式已更新。")}
+                    <p className="mt-2 text-xs leading-5 text-[color:var(--muted)]">同一学号可绑定多个 QQ；各 QQ 独立设置通知，课表和打卡设置共享。</p>
+                    {bindings.map((binding) => <div key={binding.bindingId} className="mt-3 rounded-xl border border-[color:var(--line)] p-3">
+                      <label className="block text-sm font-semibold">{binding.userHint || "已绑定 QQ"} · 通知模式
+                      <select value={binding.mode} disabled={busy}
+                        onChange={(event) => void mutateQq({ action: "preference", accountId: account.id, bindingId: binding.bindingId, mode: event.target.value }, "此 QQ 的通知模式已更新。")}
                         className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5">
                         <option value="all">全部事件</option>
                         <option value="failure">仅失败</option>
                         <option value="off">关闭通知</option>
                       </select>
-                    </label>
+                      </label>
+                      <button type="button" disabled={busy} onClick={() => void onUnbindQq(account, binding)}
+                        className="action-btn action-btn--quiet mt-2 min-h-11 rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-60">解绑此 QQ</button>
+                    </div>)}
                     <div className="mt-3 flex flex-wrap gap-2">
                       <button type="button" disabled={busy || !qq?.configured} onClick={() => void mutateQq({ action: "code", accountId: account.id }, "绑定码已生成。")}
                         className="action-btn action-btn--secondary min-h-11 rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-60">生成绑定码</button>
-                      {binding?.bound ? <button type="button" disabled={busy} onClick={() => void onUnbindQq(account)}
-                        className="action-btn action-btn--quiet min-h-11 rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-60">解绑</button> : null}
+                      {bindings.length > 0 ? <button type="button" disabled={busy} onClick={() => void onUnbindQq(account)}
+                        className="action-btn action-btn--quiet min-h-11 rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-60">解绑全部 QQ</button> : null}
                     </div>
                     {code ? <p role="status" className="mt-3 text-sm leading-6">绑定 {code.code} · 有效期至 {formatTime(new Date(code.expiresAt).getTime())}</p> : null}
                     {qqError ? <p className="mt-2 text-xs leading-5 text-[color:var(--muted)]">{qqError}</p> : null}

@@ -4,6 +4,7 @@ import Image from "next/image";
 import { FormEvent, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import AutomationPanel from "./automation-panel-multi";
 import { appUrl } from "../app-path";
+import { buildSignInUrl, selectSignIdentifier } from "../sign-url.mjs";
 
 type CourseItem = {
 	id: string;
@@ -42,18 +43,11 @@ const OFFSET_TTL_MS = 30 * 1000;
 const SIGN_TIMESTAMP_BUFFER_MS = 3 * 1000;
 
 const ACTION_STATUS_DEFAULT_TEXT = "生成签到码后，可在此查看下载、复制和点击签到的状态信息";
-const SIGN_BASE_URL = "https://iclass.ucas.edu.cn:8181/app/course/stu_scan_sign.action";
+type QrSource = { mode: "query" | "manual"; identifier: NonNullable<ReturnType<typeof selectSignIdentifier>> };
 
-type QrSource =
-	| {
-			mode: "query";
-			uuid: string;
-			courseId: string;
-	  }
-	| {
-			mode: "manual";
-			identifier: string;
-	  };
+function getCourseKey(course: CourseItem): string {
+	return `${course.id}-${course.uuid}`;
+}
 
 function toYyyyMMdd(dateInput: string): string {
 	return dateInput.replace(/-/g, "");
@@ -85,33 +79,6 @@ function formatRange(start: string, end: string): string {
 	return `${toTimeOnly(start)} ~ ${toTimeOnly(end)}`;
 }
 
-function buildSignInUrl(courseId: string, expiresAt: number): string {
-	return `${SIGN_BASE_URL}?courseSchedId=${encodeURIComponent(courseId)}&timestamp=${expiresAt}`;
-}
-
-function buildManualSignInUrl(identifier: string, expiresAt: number): string | null {
-	const raw = identifier.trim();
-	if (!raw) {
-		return null;
-	}
-
-	if (/^\d+$/.test(raw)) {
-		return `${SIGN_BASE_URL}?courseSchedId=${encodeURIComponent(raw)}&timestamp=${expiresAt}`;
-	}
-
-	const compact = raw.replace(/-/g, "");
-	if (/^[0-9a-fA-F]{32}$/.test(compact)) {
-		return `${SIGN_BASE_URL}?timeTableId=${encodeURIComponent(compact.toUpperCase())}&timestamp=${expiresAt}`;
-	}
-
-	return null;
-}
-
-function getPayloadFromSource(source: QrSource, deadline: number): string | null {
-	if (source.mode === "query") return buildSignInUrl(source.courseId, deadline);
-	return buildManualSignInUrl(source.identifier, deadline);
-}
-
 async function generateQrDataUrlFromPayload(payload: string): Promise<string> {
 	const { default: QRCode } = await import("qrcode");
 	return QRCode.toDataURL(payload, {
@@ -119,29 +86,6 @@ async function generateQrDataUrlFromPayload(payload: string): Promise<string> {
 		margin: 1,
 		errorCorrectionLevel: "M"
 	});
-}
-
-function getSignIdentifierForFilename(signUrl: string, selectedUuid: string): string {
-	if (!signUrl) {
-		return selectedUuid || "unknown";
-	}
-
-	try {
-		const url = new URL(signUrl);
-		const courseSchedId = url.searchParams.get("courseSchedId");
-		if (courseSchedId) {
-			return courseSchedId;
-		}
-
-		const timeTableId = url.searchParams.get("timeTableId");
-		if (timeTableId) {
-			return timeTableId;
-		}
-
-		return selectedUuid || "unknown";
-	} catch {
-		return selectedUuid || "unknown";
-	}
 }
 
 function extractClockTime(value: string): string | null {
@@ -175,7 +119,7 @@ export default function Home() {
 	const [keyword, setKeyword] = useState("");
 	const [manualIdentifier, setManualIdentifier] = useState("");
 	const [courses, setCourses] = useState<CourseItem[]>([]);
-	const [selectedUuid, setSelectedUuid] = useState("");
+	const [selectedCourseKey, setSelectedCourseKey] = useState("");
 	const [statusText, setStatusText] = useState("输入学号、密码和日期，开始查询课程");
 	const [statusKind, setStatusKind] = useState<StatusKind>("idle");
 	const [actionStatusText, setActionStatusText] = useState(ACTION_STATUS_DEFAULT_TEXT);
@@ -252,7 +196,7 @@ export default function Home() {
 	}, []);
 
 	const resetGeneratedSignState = () => {
-		setSelectedUuid("");
+		setSelectedCourseKey("");
 		setSignUrl("");
 		setQrDataUrl("");
 		setExpireAt(0);
@@ -268,7 +212,7 @@ export default function Home() {
 		const currentTimestamp = Date.now() + offset;
 		// 签到时间戳减去缓冲，弥补 UCAS 两台服务器间的时钟偏差
 		const signTimestamp = currentTimestamp - SIGN_TIMESTAMP_BUFFER_MS;
-		const payload = getPayloadFromSource(source, signTimestamp);
+		const payload = buildSignInUrl(source.identifier, signTimestamp);
 		if (!payload) {
 			setQrDataUrl("");
 			setSignUrl("");
@@ -365,12 +309,12 @@ export default function Home() {
 	const queryAttempted = statusKind !== "idle";
 	const hasKeyword = keyword.trim().length > 0;
 	const emptyHelpText = hasKeyword ? "可先清空筛选词，再查看全部课程" : "检查日期是否为上课日，并确认学号与密码正确";
-	const isCourseSelected = (uuid: string): boolean => selectedUuid === uuid;
+	const isCourseSelected = (course: CourseItem): boolean => selectedCourseKey === getCourseKey(course);
 
 	const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
 		setLoading(true);
-		setSelectedUuid("");
+		setSelectedCourseKey("");
 		setSignUrl("");
 		setQrDataUrl("");
 		setExpireAt(0);
@@ -409,9 +353,12 @@ export default function Home() {
 		}
 	};
 
-	const onPick = async (uuid: string, courseId: string) => {
-		setSelectedUuid(uuid);
-		const source: QrSource = { mode: "query", uuid, courseId };
+	const onPick = async (course: CourseItem) => {
+		const identifier = selectSignIdentifier(course.uuid, course.id);
+		if (!identifier) return;
+		resetGeneratedSignState();
+		setSelectedCourseKey(getCourseKey(course));
+		const source: QrSource = { mode: "query", identifier };
 		setQrSource(source);
 
 		const ok = await regenerateAutoQr(source);
@@ -434,16 +381,15 @@ export default function Home() {
 
 	const onManualGenerate = async (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
-		const source: QrSource = { mode: "manual", identifier: manualIdentifier };
-		const payload = getPayloadFromSource(source, Date.now() + (timeOffsetRef.current?.offset ?? 0));
-
-		if (!payload) {
-			updateStatus("error", "请输入纯数字课程ID或32位UUID");
+		const identifier = selectSignIdentifier(manualIdentifier, manualIdentifier);
+		if (!identifier) {
+			updateStatus("error", "请输入 32 位课程 UUID 或 7 位课程 ID");
 			return;
 		}
+		const source: QrSource = { mode: "manual", identifier };
 
 		setManualLoading(true);
-		setSelectedUuid("");
+		setSelectedCourseKey("");
 		setQrSource(source);
 
 		let ok = false;
@@ -454,7 +400,7 @@ export default function Home() {
 		}
 
 		if (!ok) {
-			updateStatus("error", "签到码生成失败，请检查课程ID或UUID后重试");
+			updateStatus("error", "签到码生成失败，请检查课程 UUID 或 ID 后重试");
 			return;
 		}
 
@@ -476,7 +422,7 @@ export default function Home() {
 
 		const offset = await getServerTimeOffset();
 		const deadline = Date.now() + offset + DOWNLOAD_QR_TTL_MS;
-		const payload = getPayloadFromSource(qrSource, deadline);
+		const payload = buildSignInUrl(qrSource.identifier, deadline);
 		if (!payload) {
 			if (featureMode === "query") {
 				updateActionStatus("error", "下载二维码失败，请重新生成签到码");
@@ -490,8 +436,7 @@ export default function Home() {
 			const imageUrl = await generateQrDataUrlFromPayload(payload);
 			const link = document.createElement("a");
 			link.href = imageUrl;
-			const safeIdentifier = getSignIdentifierForFilename(payload, selectedUuid);
-			link.download = `ucas-signin-${safeIdentifier}-${deadline}.png`;
+			link.download = `ucas-signin-${qrSource.identifier.value}-${deadline}.png`;
 			link.click();
 			if (featureMode === "query") {
 				updateActionStatus("success", "二维码已开始下载（10秒有效）");
@@ -560,18 +505,8 @@ export default function Home() {
 			return;
 		}
 
-		const courseSchedId =
-			selectedCourse?.id ||
-			(() => {
-				try {
-					const url = new URL(signUrl);
-					return url.searchParams.get("courseSchedId") ?? url.searchParams.get("timeTableId") ?? "";
-				} catch {
-					return "";
-				}
-			})();
-
-		if (!courseSchedId) {
+		const identifier = selectSignIdentifier(selectedCourse?.uuid, selectedCourse?.id);
+		if (!identifier) {
 			updateActionStatus("error", "请先在查询课程模式选择课程并生成签到码");
 			return;
 		}
@@ -586,12 +521,12 @@ export default function Home() {
 		updateActionStatus("loading", "正在发起签到…");
 
 		try {
-			// 优先从当前二维码URL中提取时间戳，与扫码行为完全一致
+			// 优先复用当前课程二维码的时间戳。
 			let signTimestamp = 0;
 			try {
 				const url = new URL(signUrl);
 				const ts = url.searchParams.get("timestamp");
-				if (ts) signTimestamp = Number(ts);
+				if (ts && url.searchParams.get(identifier.name) === identifier.value) signTimestamp = Number(ts);
 			} catch {}
 			// 降级：使用校准后的当前时间戳（减去缓冲）
 			if (!signTimestamp || !Number.isFinite(signTimestamp)) {
@@ -607,7 +542,7 @@ export default function Home() {
 				body: JSON.stringify({
 					username: safeUsername,
 					password,
-					courseSchedId,
+					[identifier.name]: identifier.value,
 					timestamp: signTimestamp
 				})
 			});
@@ -636,7 +571,7 @@ export default function Home() {
 		}
 	};
 
-	const selectedCourse = selectedUuid ? courses.find((item) => item.uuid === selectedUuid) ?? null : null;
+	const selectedCourse = selectedCourseKey ? courses.find((item) => getCourseKey(item) === selectedCourseKey) ?? null : null;
 
 	const now = renderNow + timeOffset;
 
@@ -662,7 +597,7 @@ export default function Home() {
 		selectedCourse && (!signWindow || now < signWindow.openAt || now > signWindow.closeAt)
 	);
 
-	const directSignDisabled = loading || directSignLoading || !hasQr || !selectedUuid || directSignBlockedByTime;
+	const directSignDisabled = loading || directSignLoading || !hasQr || !selectedCourseKey || directSignBlockedByTime;
 
 	const directSignButtonText = directSignLoading
 		? "签到中..."
@@ -705,7 +640,7 @@ export default function Home() {
 								onClick={() => {
 									resetGeneratedSignState();
 									setFeatureMode("manual");
-									updateStatus("idle", "输入课程ID或UUID，直接生成签到码");
+									updateStatus("idle", "输入课程 UUID 或 ID，直接生成签到码");
 								}}
 								className={`action-btn min-h-11 rounded-lg px-3.5 py-2 text-xs font-semibold sm:text-sm ${
 									featureMode === "manual" ? "action-btn--primary" : "action-btn--secondary"
@@ -824,10 +759,11 @@ export default function Home() {
 											</div>
 										) : (
 											filteredCourses.map((course) => {
-												const selected = isCourseSelected(course.uuid);
+												const selected = isCourseSelected(course);
+												const canGenerate = Boolean(selectSignIdentifier(course.uuid, course.id));
 												return (
 													<article
-														key={`${course.id}-${course.uuid}`}
+														key={getCourseKey(course)}
 														className={`course-item clay-card rounded-xl border p-4 ${
 															selected
 																? "course-item--selected border-[color:var(--line-strong)] bg-[color:var(--paper-strong)]"
@@ -865,10 +801,11 @@ export default function Home() {
 														</dl>
 														<button
 															type="button"
-															onClick={() => onPick(course.uuid, course.id)}
+															disabled={!canGenerate}
+															onClick={() => onPick(course)}
 															className="action-btn action-btn--secondary mt-3 w-full min-h-11 rounded-lg px-3.5 py-2 text-sm font-semibold"
 														>
-															{selected ? "已选中" : "生成签到码"}
+															{!canGenerate ? "缺少有效编号" : selected ? "已选中" : "生成签到码"}
 														</button>
 													</article>
 												);
@@ -905,10 +842,11 @@ export default function Home() {
 													</tr>
 												) : (
 													filteredCourses.map((course) => {
-														const selected = isCourseSelected(course.uuid);
+														const selected = isCourseSelected(course);
+														const canGenerate = Boolean(selectSignIdentifier(course.uuid, course.id));
 														return (
 															<tr
-																key={`${course.id}-${course.uuid}`}
+																key={getCourseKey(course)}
 																className={`course-row ${
 																	selected
 																		? "bg-[color:var(--paper-strong)]"
@@ -943,10 +881,11 @@ export default function Home() {
 																<td className="px-3 py-3">
 																	<button
 																		type="button"
-																		onClick={() => onPick(course.uuid, course.id)}
+																		disabled={!canGenerate}
+																		onClick={() => onPick(course)}
 																		className="action-btn action-btn--secondary min-h-11 rounded-lg px-3.5 py-2 text-xs font-semibold"
 																	>
-																		{selected ? "已选中" : "生成签到码"}
+																		{!canGenerate ? "缺少有效编号" : selected ? "已选中" : "生成签到码"}
 																	</button>
 																</td>
 															</tr>
@@ -1035,19 +974,19 @@ export default function Home() {
 								<div className="space-y-1">
 									<h2 className="font-[var(--font-serif)] text-2xl font-semibold">手动生成签到码</h2>
 									<p className="text-xs tracking-[0.08em] uppercase text-[color:var(--green)]">
-										课程ID为7位纯数字，UUID为32位十六进制字符串
+										优先输入 32 位 UUID（可带连字符），也可输入 7 位课程 ID
 									</p>
 								</div>
 
 								<div className="mt-6 space-y-4">
 									<label className="block text-sm font-semibold">
-										课程ID / UUID
+										课程 UUID / ID
 										<input
 											className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5"
 											name="manualCourseIdentifier"
 											value={manualIdentifier}
 											onChange={(e) => setManualIdentifier(e.target.value)}
-											placeholder="1203879 / EFD843630CE444769921BDDCD05298C7"
+											placeholder="00112233-4455-6677-8899-aabbccddeeff"
 											autoComplete="off"
 											spellCheck={false}
 											required

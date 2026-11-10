@@ -100,7 +100,7 @@ async function saveCompleted() {
   await completedWrite;
 }
 
-async function markCompleted(state, group, message, notificationSource = null) {
+async function markCompleted(state, group, message, notification = null) {
   const key = completionKey(state, group);
   state.messages.set(group.key, message);
   if (!completed.has(key)) {
@@ -109,13 +109,14 @@ async function markCompleted(state, group, message, notificationSource = null) {
     try { await saveCompleted(); }
     catch { log("签到记录保存失败，本次运行仍会停止重试。"); }
   }
-  if (notificationSource) {
+  if (notification) {
     await enqueueQqNotification(successNotification({
       accountId: state.id,
       completionKey: key,
       courseName: group.first.courseName,
       accountHint: state.usernameHint,
-      source: notificationSource
+      source: notification.source,
+      signParameter: notification.signParameter
     }));
   }
 }
@@ -215,8 +216,8 @@ async function refreshSchedule(state, now) {
       log(`${state.usernameHint} · ${state.activeDate} 课表已获取：${rawCourses.length} 条，跳过不打卡名单后剩余 ${courses.length} 条，合并为 ${state.groups.length} 组。`);
     }
     for (const group of state.groups) {
-      if (group.signTargets.some((course) => course.signStatus === "1")) {
-        await markCompleted(state, group, "同一时间段的课表入口显示已签到", "schedule");
+      if (group.courses.some((course) => String(course.signStatus) === "1")) {
+        await markCompleted(state, group, "同一时间段的课表入口显示已签到", { source: "schedule" });
       }
     }
   } catch (error) {
@@ -256,9 +257,9 @@ async function attemptSign(state, group) {
   let delay = 10_000;
   try {
     const timestamp = await timestampForSign(state);
-    const result = await state.client.sign(target.id, timestamp);
+    const { data: result, signParameter } = await state.client.sign({ uuid: target.uuid, courseSchedId: target.legacyId }, timestamp);
     if (result?.STATUS === "0" && result?.result?.stuSignStatus === "1") {
-      await markCompleted(state, group, `第 ${count} 次尝试成功，课程入口 ${target.id}${result.result.stuSignId ? `，记录 ${result.result.stuSignId}` : ""}`, "attempt");
+      await markCompleted(state, group, `第 ${count} 次尝试成功，课程入口 ${target.id}${result.result.stuSignId ? `，记录 ${result.result.stuSignId}` : ""}`, { source: "attempt", signParameter });
       return;
     }
     const reason = result?.result?.msg ?? result?.ERRMSG ?? result?.msg ?? result?.message ?? "上游未确认成功";
@@ -348,9 +349,9 @@ function publicPlan(state, now) {
     return {
       key: group.key,
       courseName: group.first.courseName ?? "",
-      teacherName: [...new Set(group.signTargets.map((course) => String(course.teacherName ?? "").trim()).filter(Boolean))].join(" / "),
+      teacherName: [...new Set(group.courses.map((course) => String(course.teacherName ?? "").trim()).filter(Boolean))].join(" / "),
       courseId: group.first.id,
-      courseIds: group.signTargets.map((course) => course.id),
+      courseIds: [...new Set(group.courses.map((course) => course.id))],
       start: group.start,
       end: group.end,
       targetCount: group.signTargets.length,

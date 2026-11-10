@@ -10,14 +10,21 @@ function accountField(accountHint) {
   return hint ? { label: "学号", value: hint } : null;
 }
 
-export function successNotification({ accountId, completionKey, courseName, accountHint, source }) {
+export function successNotification({ accountId, completionKey, courseName, accountHint, source, signParameter }) {
   const course = cleanLabel(courseName, "未命名课程");
   const fromSchedule = source === "schedule";
+  const method = fromSchedule ? "课表确认（方式未知）"
+    : signParameter === "timeTableId" ? "UUID"
+      : signParameter === "courseSchedId" ? "courseSchedId" : "未知";
   return {
     id: `completion:${completionKey}:success`,
     accountId,
     kind: "success",
-    content: card(fromSchedule ? "课表显示已签到" : "签到成功", [accountField(accountHint), { label: "课程", value: course }])
+    content: card(fromSchedule ? "课表显示已签到" : "签到成功", [
+      accountField(accountHint),
+      { label: "课程", value: course },
+      { label: "方法", value: method }
+    ])
   };
 }
 

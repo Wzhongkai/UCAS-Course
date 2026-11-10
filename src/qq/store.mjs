@@ -23,7 +23,7 @@ const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 function emptyState() {
   return {
-    version: 1,
+    version: 2,
     admins: [],
     bootstrapClaimed: false,
     adminModes: {},
@@ -100,16 +100,30 @@ async function readState(file) {
     if (error?.code === "ENOENT") return emptyState();
     throw error;
   }
-  if (!parsed || parsed.version !== 1 || typeof parsed !== "object") throw new Error("QQ 存储文件格式无效");
+  if (!parsed || ![1, 2].includes(parsed.version) || typeof parsed !== "object") throw new Error("QQ 存储文件格式无效");
   const defaults = emptyState();
   return {
     ...defaults,
     ...parsed,
+    version: 2,
     admins: Array.isArray(parsed.admins) ? parsed.admins : [],
     adminModes: parsed.adminModes && typeof parsed.adminModes === "object" && !Array.isArray(parsed.adminModes)
       ? parsed.adminModes
       : {},
-    bindings: parsed.bindings && typeof parsed.bindings === "object" ? parsed.bindings : {},
+    bindings: Object.fromEntries(Object.entries(parsed.bindings ?? {}).map(([accountId, value]) => {
+      const entries = Array.isArray(value) ? value : [value];
+      const seen = new Set();
+      return [accountId, entries.map((binding) => {
+        const userId = cleanId(binding?.userId, "QQ 用户");
+        if (seen.has(userId)) throw new Error("QQ 绑定记录重复");
+        seen.add(userId);
+        return {
+          ...binding, userId,
+          mode: MODES.has(binding.mode) ? binding.mode : "all",
+          bindingId: binding.bindingId || createHash("sha256").update(JSON.stringify([accountId, userId, binding.boundAt])).digest("hex").slice(0, 24)
+        };
+      })];
+    })),
     bindingCodes: parsed.bindingCodes && typeof parsed.bindingCodes === "object" ? parsed.bindingCodes : {},
     bindingAttempts: parsed.bindingAttempts && typeof parsed.bindingAttempts === "object" ? parsed.bindingAttempts : {},
     bindingGuess: parsed.bindingGuess && typeof parsed.bindingGuess === "object" ? parsed.bindingGuess : defaults.bindingGuess,
@@ -176,7 +190,7 @@ function trimTerminalHistory(state) {
 function pruneNotificationIds(state, now) {
   const unfinished = new Set(state.notifications
     .filter((item) => ["pending", "sending"].includes(item.status))
-    .map((item) => item.id));
+    .map((item) => item.eventId ?? item.id));
   for (const [id, timestamp] of Object.entries(state.notificationIds)) {
     if (!unfinished.has(id) && (!Number.isFinite(timestamp) || timestamp < now - NOTIFICATION_ID_RETENTION_MS)) {
       delete state.notificationIds[id];
@@ -261,6 +275,18 @@ export function createQqStore({
     });
   }
 
+  function addBinding(state, userId, accountId) {
+    const entries = state.bindings[accountId] ?? [];
+    if (entries.some((binding) => binding.userId === userId)) return;
+    if (Object.entries(state.bindings).some(([otherId, bindings]) => otherId !== accountId
+      && bindings.some((binding) => binding.userId === userId))) {
+      throw new Error("该 QQ 已绑定其他学号，请先解绑");
+    }
+    state.bindings[accountId] = [...entries, {
+      userId, mode: "all", boundAt: new Date().toISOString(), bindingId: randomBytes(12).toString("hex")
+    }];
+  }
+
   async function bind(userId, code) {
     const cleanUserId = cleanId(userId, "QQ 用户");
     const cleanCode = typeof code === "string" ? code.trim().toUpperCase() : "";
@@ -301,12 +327,7 @@ export function createQqStore({
         return { error: attempt.blockedUntil > now ? "绑定尝试过多，请稍后再试" : "绑定码无效或已过期" };
       }
 
-      const previous = state.bindings[entry.accountId];
-      state.bindings[entry.accountId] = {
-        userId: cleanUserId,
-        mode: previous?.userId === cleanUserId && MODES.has(previous.mode) ? previous.mode : "all",
-        boundAt: new Date(now).toISOString()
-      };
+      addBinding(state, cleanUserId, entry.accountId);
       delete state.bindingCodes[hash];
       delete state.bindingAttempts[cleanUserId];
       return { accountId: entry.accountId };
@@ -315,66 +336,72 @@ export function createQqStore({
     return result;
   }
 
-  async function bindVerified(userId, accountId, { allowMultiple = false } = {}) {
+  async function bindVerified(userId, accountId) {
     const cleanUserId = cleanId(userId, "QQ 用户");
     const cleanAccountId = cleanId(accountId, "学号");
-    if (typeof allowMultiple !== "boolean") throw new Error("绑定选项无效");
     return transact((state) => {
-      const existing = state.bindings[cleanAccountId];
-      if (existing && existing.userId !== cleanUserId) throw new Error("该学号已绑定其他 QQ");
-      if (existing?.userId === cleanUserId) return { accountId: cleanAccountId };
-      if (!allowMultiple && Object.values(state.bindings).some((binding) => binding.userId === cleanUserId)) {
-        throw new Error("该 QQ 已绑定其他学号");
-      }
-      state.bindings[cleanAccountId] = {
-        userId: cleanUserId,
-        mode: "all",
-        boundAt: new Date().toISOString()
-      };
+      addBinding(state, cleanUserId, cleanAccountId);
       return { accountId: cleanAccountId };
     });
   }
 
-  async function getBinding(accountId) {
+  async function getBindings(accountId) {
     const cleanAccountId = cleanId(accountId, "学号");
+    return read((state) => (state.bindings[cleanAccountId] ?? []).map(({ userId, mode, bindingId }) => ({ userId, mode, bindingId })));
+  }
+
+  async function getBinding(accountId, userId) {
+    const cleanAccountId = cleanId(accountId, "学号");
+    const cleanUserId = userId === undefined ? undefined : cleanId(userId, "QQ 用户");
     return read((state) => {
-      const binding = state.bindings[cleanAccountId];
+      const entries = state.bindings[cleanAccountId] ?? [];
+      const binding = cleanUserId === undefined ? (entries.length === 1 ? entries[0] : null)
+        : entries.find((entry) => entry.userId === cleanUserId);
       return binding ? { userId: binding.userId, mode: MODES.has(binding.mode) ? binding.mode : "all" } : null;
     });
   }
 
   async function listBindings(userId) {
     const cleanUserId = cleanId(userId, "QQ 用户");
-    return read((state) => Object.entries(state.bindings)
-      .filter(([, binding]) => binding.userId === cleanUserId)
-      .map(([accountId, binding]) => ({ accountId, userId: binding.userId, mode: MODES.has(binding.mode) ? binding.mode : "all" })));
+    return read((state) => Object.entries(state.bindings).flatMap(([accountId, bindings]) => bindings
+      .filter((binding) => binding.userId === cleanUserId)
+      .map((binding) => ({ accountId, userId: binding.userId, mode: binding.mode }))));
   }
 
-  async function unbind(accountId) {
+  async function unbind(accountId, userId) {
     const cleanAccountId = cleanId(accountId, "学号");
+    const cleanUserId = userId === undefined ? undefined : cleanId(userId, "QQ 用户");
     return transact((state) => {
-      const existed = Boolean(state.bindings[cleanAccountId]);
-      delete state.bindings[cleanAccountId];
-      for (const [hash, entry] of Object.entries(state.bindingCodes)) {
-        if (entry.accountId === cleanAccountId) delete state.bindingCodes[hash];
+      const entries = state.bindings[cleanAccountId] ?? [];
+      const remaining = cleanUserId === undefined ? [] : entries.filter((binding) => binding.userId !== cleanUserId);
+      const existed = remaining.length !== entries.length;
+      if (remaining.length) state.bindings[cleanAccountId] = remaining;
+      else delete state.bindings[cleanAccountId];
+      if (cleanUserId === undefined) {
+        for (const [hash, entry] of Object.entries(state.bindingCodes)) {
+          if (entry.accountId === cleanAccountId) delete state.bindingCodes[hash];
+        }
       }
       for (const item of state.notifications) {
-        if (item.accountId === cleanAccountId && ["pending", "sending"].includes(item.status)) item.status = "cancelled";
+        if (item.accountId === cleanAccountId && (cleanUserId === undefined || item.userId === cleanUserId)
+          && ["pending", "sending"].includes(item.status)) item.status = "cancelled";
       }
       trimTerminalHistory(state);
       return existed;
     });
   }
 
-  async function setPreference(accountId, mode) {
+  async function setPreference(accountId, mode, userId) {
     const cleanAccountId = cleanId(accountId, "学号");
+    const cleanUserId = userId === undefined ? undefined : cleanId(userId, "QQ 用户");
     if (!MODES.has(mode)) throw new Error("通知偏好无效");
     return transact((state) => {
-      const binding = state.bindings[cleanAccountId];
-      if (!binding) throw new Error("该学号尚未绑定 QQ");
-      binding.mode = mode;
+      const bindings = (state.bindings[cleanAccountId] ?? []).filter((entry) => cleanUserId === undefined || entry.userId === cleanUserId);
+      if (!bindings.length) throw new Error("该学号尚未绑定此 QQ");
+      for (const binding of bindings) binding.mode = mode;
       for (const item of state.notifications) {
-        if (item.accountId === cleanAccountId && ["pending", "sending"].includes(item.status) && !allows(mode, item.kind)) {
+        if (item.accountId === cleanAccountId && (cleanUserId === undefined || item.userId === cleanUserId)
+          && ["pending", "sending"].includes(item.status) && !allows(mode, item.kind)) {
           item.status = "cancelled";
         }
       }
@@ -397,9 +424,10 @@ export function createQqStore({
     });
   }
 
-  async function enqueueNotification({ id, accountId, kind, content, expiresAt } = {}) {
+  async function enqueueNotification({ id, accountId, kind, content, expiresAt, userId } = {}) {
     const cleanEventId = cleanId(id, "事件编号");
     const cleanAccountId = cleanId(accountId, "学号");
+    const cleanUserId = userId === undefined ? undefined : cleanId(userId, "QQ 用户");
     if (!KINDS.has(kind)) throw new Error("通知类型无效");
     if (typeof content !== "string" || !content.trim() || content.length > 10_000) throw new Error("通知内容无效");
     if (expiresAt !== undefined && !Number.isFinite(expiresAt)) throw new Error("通知有效期无效");
@@ -410,11 +438,13 @@ export function createQqStore({
       if (Object.hasOwn(state.notificationIds, cleanEventId)) return false;
       if (Object.keys(state.notificationIds).length >= MAX_NOTIFICATION_IDS) return false;
       state.notificationIds[cleanEventId] = now;
-      const binding = state.bindings[cleanAccountId];
-      if (!binding || !allows(binding.mode, kind)) return false;
-      if (state.notifications.filter((item) => ["pending", "sending"].includes(item.status)).length >= MAX_PENDING_NOTIFICATIONS) return false;
-      state.notifications.push({
-        id: cleanEventId,
+      const recipients = (state.bindings[cleanAccountId] ?? []).filter((binding) => allows(binding.mode, kind)
+        && (cleanUserId === undefined || binding.userId === cleanUserId));
+      if (!recipients.length) return false;
+      if (state.notifications.filter((item) => ["pending", "sending"].includes(item.status)).length + recipients.length > MAX_PENDING_NOTIFICATIONS) return false;
+      for (const binding of recipients) state.notifications.push({
+        id: recipients.length === 1 ? cleanEventId : `delivery-${randomBytes(16).toString("hex")}`,
+        eventId: cleanEventId,
         accountId: cleanAccountId,
         userId: binding.userId,
         kind,
@@ -529,7 +559,7 @@ export function createQqStore({
           if (result) counts[result] += 1;
           continue;
         }
-        const binding = await getBinding(reservedItem.accountId);
+        const binding = await getBinding(reservedItem.accountId, reservedItem.userId);
         if (!exists || !binding || binding.userId !== reservedItem.userId || !allows(binding.mode, reservedItem.kind)
           || (Number.isFinite(reservedItem.expiresAt) && reservedItem.expiresAt <= Date.now())) {
           await transact((state) => {
@@ -572,12 +602,13 @@ export function createQqStore({
 
   async function getSummary() {
     return read((state) => ({
-      bindings: Object.entries(state.bindings).map(([accountId, binding]) => ({
+      bindings: Object.entries(state.bindings).flatMap(([accountId, bindings]) => bindings.map((binding) => ({
         accountId,
+        bindingId: binding.bindingId,
         bound: true,
         mode: MODES.has(binding.mode) ? binding.mode : "all",
         userHint: hintUserId(binding.userId)
-      })),
+      }))),
       pending: state.notifications.filter((item) => ["pending", "sending"].includes(item.status)).length,
       failed: state.notificationStats.failed,
       sent: state.notificationStats.sent
@@ -605,6 +636,7 @@ export function createQqStore({
     bind,
     bindVerified,
     getBinding,
+    getBindings,
     listBindings,
     unbind,
     setPreference,

@@ -1,3 +1,5 @@
+import { buildSignInUrl, selectSignIdentifier } from "./sign-url.mjs";
+
 const BASE = "https://iclass.ucas.edu.cn:8181";
 const LOGIN_UA = "student_5.0.1.2_android_12_20__110000";
 const API_UA = "student_5.0.1.2_android_12_20_100000000000000_110000";
@@ -93,16 +95,15 @@ export class UcasClient {
     return data.result;
   }
 
-  async sign(courseSchedId, timestamp) {
+  async sign({ uuid, courseSchedId }, timestamp) {
+    const identifier = selectSignIdentifier(uuid, courseSchedId);
+    if (!identifier) throw new Error("缺少有效的课程 UUID 或课程 ID");
     await this.ensureLogin();
-    const url = new URL(`${BASE}/app/course/stu_scan_sign.action`);
-    url.searchParams.set("courseSchedId", courseSchedId);
-    url.searchParams.set("timestamp", String(timestamp));
-    url.searchParams.set("id", this.userId);
-    return requestJson(this.fetchImpl, url, {
+    const data = await requestJson(this.fetchImpl, buildSignInUrl(identifier, timestamp, this.userId), {
       method: "GET",
       headers: { sessionId: this.sessionId, "User-Agent": API_UA }
     });
+    return { data, signParameter: identifier.name };
   }
 
   async serverTimestamp() {

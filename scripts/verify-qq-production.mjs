@@ -78,9 +78,26 @@ try {
   assert.equal(summary.bindings[0].mode, "failure");
   assert.equal(summary.bindings[0].userHint.includes("http-test-qq"), false);
   assert.equal(JSON.stringify(summary).includes(key), false);
+  await store.bindVerified("http-second-qq", account.id);
+  const sharedSummary = await (await fetch(base + "/api/qq", { headers: { Cookie: cookie } })).json();
+  assert.equal(sharedSummary.bindings.length, 2);
+  assert.equal(JSON.stringify(sharedSummary).includes("http-second-qq"), false);
+  const firstBindingId = sharedSummary.bindings.find((entry) => entry.mode === "failure").bindingId;
+  const secondBindingId = sharedSummary.bindings.find((entry) => entry.mode === "all").bindingId;
+  assert.equal((await post("/api/qq", { action: "preference", accountId: account.id, bindingId: firstBindingId, mode: "off" })).status, 200);
+  assert.equal((await store.getBinding(account.id, "http-test-qq")).mode, "off");
+  assert.equal((await store.getBinding(account.id, "http-second-qq")).mode, "all");
+  assert.equal((await post("/api/qq", { action: "unbind", accountId: account.id, bindingId: firstBindingId })).status, 200);
+  assert.equal(await store.getBinding(account.id, "http-test-qq"), null);
+  assert.ok(await store.getBinding(account.id, "http-second-qq"));
+  assert.equal((await post("/api/qq", { action: "unbind", accountId: account.id, bindingId: firstBindingId })).status, 404);
+  assert.equal((await post("/api/qq", { action: "preference", accountId: account.id, bindingId: "invalid", mode: "off" })).status, 400);
+  assert.equal((await post("/api/qq", { action: "preference", accountId: "missing", bindingId: secondBindingId, mode: "off" })).status, 404);
   assert.equal((await post("/api/qq", { action: "preference", accountId: account.id, mode: "invalid" })).status, 400);
   assert.equal((await post("/api/qq", { action: "code", accountId: "missing" })).status, 404);
-  console.log("生产接口验证通过：身份验证、同源保护、课表查询参数校验、暂停添加、单课程时间、绑定与通知模式、密钥隔离。");
+  assert.equal((await post("/api/automation", { action: "remove", accountId: account.id })).status, 200);
+  assert.equal((await store.getBindings(account.id)).length, 0, "删除学号必须清理所有 QQ 绑定");
+  console.log("生产接口验证通过：身份验证、同源保护、多 QQ 绑定、独立通知和解绑、删除清理、密钥隔离。");
 } finally {
   child.kill();
   await exited;

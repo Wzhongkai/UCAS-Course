@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authorized } from "../../../../automation/auth.mjs";
+import { buildSignInUrl, selectSignIdentifier } from "../../../../sign-url.mjs";
 
 const LOGIN_URL = "https://iclass.ucas.edu.cn:8181/app/user/login.action";
-const SIGN_URL = "https://iclass.ucas.edu.cn:8181/app/course/stu_scan_sign.action";
 
 const LOGIN_UA = "student_5.0.1.2_android_12_20__110000";
 const API_UA = "student_5.0.1.2_android_12_20_100000000000000_110000";
@@ -186,14 +186,6 @@ function isCredentialInputInvalid(username: string, password: string): boolean {
 	return false;
 }
 
-function normalizeCourseSchedId(raw: string): string | null {
-	const compact = raw.trim();
-	if (!/^\d{7}$/.test(compact)) {
-		return null;
-	}
-	return compact;
-}
-
 function buildLoginBody(username: string, password: string): string {
 	const verificationUrlTemplate =
 		"http://iclass.ucas.edu.cn:88/ve/webservices/mobileCheck.shtml?method=mobileLogin&username=${0}&password=${1}&lx=${2}";
@@ -249,8 +241,7 @@ export async function POST(req: NextRequest) {
 		const bodyObject = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
 		const username = String(bodyObject.username ?? "").trim();
 		const password = String(bodyObject.password ?? "");
-		const courseSchedIdRaw = String(bodyObject.courseSchedId ?? bodyObject.timeTableId ?? "");
-		const courseSchedId = normalizeCourseSchedId(courseSchedIdRaw);
+		const identifier = selectSignIdentifier(bodyObject.timeTableId, bodyObject.courseSchedId ?? bodyObject.timeTableId);
 		const clientTimestamp =
 			typeof bodyObject.timestamp === "number" && Number.isFinite(bodyObject.timestamp)
 				? bodyObject.timestamp
@@ -260,8 +251,8 @@ export async function POST(req: NextRequest) {
 			return jsonWithHeaders({ message: "学号或密码格式错误" }, { status: 400 });
 		}
 
-		if (!courseSchedId) {
-			return jsonWithHeaders({ message: "课程 ID 格式错误" }, { status: 400 });
+		if (!identifier) {
+			return jsonWithHeaders({ message: "请提供有效的 32 位课程 UUID 或 7 位课程 ID" }, { status: 400 });
 		}
 
 		stage = "login";
@@ -315,7 +306,7 @@ export async function POST(req: NextRequest) {
 
 		let signData: UpstreamSignResponse;
 		try {
-			const upstreamUrl = `${SIGN_URL}?courseSchedId=${encodeURIComponent(courseSchedId)}&timestamp=${clientTimestamp}&id=${encodeURIComponent(userId)}`;
+			const upstreamUrl = buildSignInUrl(identifier, clientTimestamp, userId);
 
 			const signRes = await fetch(upstreamUrl, {
 				method: "GET",

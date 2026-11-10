@@ -154,7 +154,7 @@ if (Test-Path -LiteralPath $publicSource -PathType Container) {
   Copy-Item -Path $publicSource -Destination $packageRoot -Recurse -Force
 }
 
-foreach ($file in @("worker-multi.mjs", "ucas.mjs", "schedule.mjs")) {
+foreach ($file in @("worker-multi.mjs", "ucas.mjs", "schedule.mjs", "sign-url.mjs")) {
   Copy-RequiredFile (Join-Path $projectRoot "src\$file") (Join-Path $packageRoot "src\$file")
 }
 foreach ($file in (Get-ChildItem -LiteralPath (Join-Path $projectRoot "src\automation") -File -Filter "*.mjs")) {

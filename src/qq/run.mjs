@@ -39,7 +39,7 @@ if (process.env.QQ_BOT_ENABLED !== "1" || !process.env.QQ_BOT_APP_ID || !process
             beforeSend: async () => {
               // Recheck after the send queue's pacing delay. A binding may
               // have been revoked while an older message was waiting.
-              const binding = await store.getBinding(delivery.accountId);
+              const binding = await store.getBinding(delivery.accountId, userId);
               const current = await readPublicSettings();
               const allowed = binding?.userId === userId
                 && binding.mode !== "off"

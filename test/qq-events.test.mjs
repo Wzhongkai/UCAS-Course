@@ -5,12 +5,15 @@ import { expiredNotification, scheduleErrorNotification, successNotification, up
 test("success notifications deduplicate by completion key and say how success was detected", () => {
   const base = { accountId: "acct-1", completionKey: "acct-1:20261015:123:1792020000000", courseName: "数据结构", accountHint: "123***789" };
   const fromSchedule = successNotification({ ...base, source: "schedule" });
-  const fromAttempt = successNotification({ ...base, source: "attempt" });
+  const fromAttempt = successNotification({ ...base, source: "attempt", signParameter: "timeTableId" });
+  const fallback = successNotification({ ...base, source: "attempt", signParameter: "courseSchedId" });
 
   assert.equal(fromSchedule.id, fromAttempt.id);
   assert.match(fromSchedule.content, /课表显示已签到/u);
+  assert.match(fromSchedule.content, /方法：课表确认（方式未知）/u);
   assert.match(fromAttempt.content, /签到成功/u);
-  assert.match(fromAttempt.content, /^【签到成功】\n\n学号：123\*\*\*789\n课程：数据结构$/u);
+  assert.match(fromAttempt.content, /^【签到成功】\n\n学号：123\*\*\*789\n课程：数据结构\n方法：UUID$/u);
+  assert.match(fallback.content, /方法：courseSchedId$/u);
   assert.doesNotMatch(fromAttempt.content, /节流|权限/u);
   assert.equal(fromSchedule.accountId, base.accountId);
 });
@@ -52,6 +55,6 @@ test("upcoming notifications have a stable key, Shanghai time, and no credential
 });
 
 test("notifications omit the account field when there is no safe account hint", () => {
-  const event = successNotification({ accountId: "acct-1", completionKey: "key", courseName: "数据结构", accountHint: "", source: "attempt" });
-  assert.equal(event.content, "【签到成功】\n\n课程：数据结构");
+  const event = successNotification({ accountId: "acct-1", completionKey: "key", courseName: "数据结构", accountHint: "", source: "attempt", signParameter: "timeTableId" });
+  assert.equal(event.content, "【签到成功】\n\n课程：数据结构\n方法：UUID");
 });

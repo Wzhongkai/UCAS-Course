@@ -237,12 +237,6 @@ export function createCommandHandler({
     return "没有权限管理该学号的账号；普通用户只能操作自己已绑定的学号。";
   }
 
-  async function bindingForTarget(userId, account, admin) {
-    const binding = await call(store, "getBinding", accountIdOf(account));
-    if (!admin && binding?.userId !== userId) return null;
-    return binding ?? null;
-  }
-
   async function handleInternal({ userId, content }) {
     const safeUserId = normalizeUserId(userId);
     if (!safeUserId) return "无法识别你的 QQ ID。";
@@ -301,16 +295,9 @@ export function createCommandHandler({
           const settings = await readSettings();
           let account = settings.find((entry) => entry.username === username);
           let created = false;
-          if (account) {
-            const currentBinding = await call(store, "getBinding", accountIdOf(account));
-            if (currentBinding?.userId && currentBinding.userId !== safeUserId) {
-              return "该学号已绑定其他 QQ，无法重复绑定。";
-            }
-          }
-
           const ownBindings = await bindingsFor(safeUserId);
-          if (!identity && ownBindings.some((binding) => binding.accountId !== accountIdOf(account))) {
-            return "普通用户只能绑定一个学号；请先解绑现有学号，或联系管理员处理。";
+          if (ownBindings.some((binding) => binding.accountId !== accountIdOf(account))) {
+            return "每个 QQ 只能绑定一个学号；请先解绑现有学号。";
           }
 
           if (!account) {
@@ -324,17 +311,14 @@ export function createCommandHandler({
           const accountId = accountIdOf(account);
           if (!accountId) throw new Error("invalid account id");
           try {
-            const result = await call(store, "bindVerified", safeUserId, accountId, { allowMultiple: identity });
+            const result = await call(store, "bindVerified", safeUserId, accountId);
             if (result?.accountId !== accountId) throw new Error("binding result mismatch");
           } catch (error) {
             if (created) {
               await call(automation, "updateAutomationSettings", { action: "remove", accountId }).catch(() => {});
             }
-            if (/只能绑定一个账号|multiple|allowMultiple/iu.test(String(error?.message ?? ""))) {
-              return "普通用户只能绑定一个学号；请先解绑现有学号，或联系管理员处理。";
-            }
-            if (/其他用户|已绑定|owned|already bound/iu.test(String(error?.message ?? ""))) {
-              return "该学号已绑定其他 QQ，无法重复绑定。";
+            if (/只能绑定一个|已绑定其他学号|multiple/iu.test(String(error?.message ?? ""))) {
+              return "每个 QQ 只能绑定一个学号；请先解绑现有学号。";
             }
             throw error;
           }
@@ -366,8 +350,8 @@ export function createCommandHandler({
       for (const account of scope.accounts) {
         let suffix = account.enabled ? "打卡已开启" : "打卡已关闭";
         if (identity) {
-          const binding = await call(store, "getBinding", accountIdOf(account));
-          if (binding?.userId) suffix += `；绑定 QQ ${safeText(binding.userId, 80)}`;
+          const bindings = await call(store, "getBindings", accountIdOf(account));
+          suffix += `；已绑定 ${bindings.length} 个 QQ`;
         }
         fields.push({ label: accountLabel(account), value: suffix });
       }
@@ -391,7 +375,7 @@ export function createCommandHandler({
         bindResult = await call(store, "bind", safeUserId, code);
         accountId = typeof bindResult === "string" ? bindResult : bindResult?.accountId;
         if (typeof accountId !== "string" || accountId.length === 0 || accountId.length > 128) return "绑定码格式无效或已过期。";
-        binding = await call(store, "getBinding", accountId);
+        binding = await call(store, "getBinding", accountId, safeUserId);
       } catch {
         return "绑定码格式无效或已过期。";
       }
@@ -442,9 +426,11 @@ export function createCommandHandler({
       const scope = await resolveSingleAccount(safeUserId, identity, requestedUsername);
       if (scope.reason) return scopeError(scope.reason);
       const username = scope.accounts[0].username;
-      await call(store, "unbind", accountIdOf(scope.accounts[0]));
+      await call(store, "unbind", accountIdOf(scope.accounts[0]), identity ? undefined : safeUserId);
       pendingDeletes.delete(`${safeUserId}:${username}`);
-      return card("已解除绑定", [{ label: "学号", value: username }], { footer: "自动化账号仍保留。" });
+      return card("已解除绑定", [{ label: "学号", value: username }], {
+        footer: identity ? "该学号的全部 QQ 已解绑，自动化账号仍保留。" : "仅解除你自己的绑定，其他 QQ 和自动化账号仍保留。"
+      });
     }
 
     if ((match = trimmed.match(/^状态(?:\s+(\S+))?$/u))) {
@@ -807,8 +793,10 @@ export function createCommandHandler({
       if (scope.reason) return scopeError(scope.reason);
       const username = scope.accounts[0].username;
       const mode = match[2] === "全部" ? "all" : match[2] === "仅失败" ? "failure" : "off";
-      await call(store, "setPreference", accountIdOf(scope.accounts[0]), mode);
-      return card("通知设置已更新", [{ label: "学号", value: username }, { label: "接收方式", value: match[2] }]);
+      await call(store, "setPreference", accountIdOf(scope.accounts[0]), mode, identity ? undefined : safeUserId);
+      return card("通知设置已更新", [{ label: "学号", value: username }, { label: "接收方式", value: match[2] }], {
+        footer: identity ? "已应用到该学号绑定的全部 QQ。" : "仅修改你自己的通知偏好。"
+      });
     }
 
     if ((match = trimmed.match(/^测试通知(?:\s+(\S+))?$/u))) {
@@ -818,16 +806,18 @@ export function createCommandHandler({
       if (scope.reason) return scopeError(scope.reason);
       const username = scope.accounts[0].username;
       const accountId = accountIdOf(scope.accounts[0]);
-      const binding = await bindingForTarget(safeUserId, scope.accounts[0], identity);
-      if (binding?.mode === "off") return card("测试通知未发送", [{ label: "学号", value: username }, { label: "原因", value: "通知已关闭" }]);
-      if (!binding || !["all", "failure"].includes(binding.mode)) {
+      const bindings = identity ? await call(store, "getBindings", accountId)
+        : [await call(store, "getBinding", accountId, safeUserId)].filter(Boolean);
+      if (bindings.length && bindings.every((binding) => binding.mode === "off")) return card("测试通知未发送", [{ label: "学号", value: username }, { label: "原因", value: "通知已关闭" }]);
+      if (!bindings.some((binding) => ["all", "failure"].includes(binding.mode))) {
         return identity
           ? `该账号通知设置不可用，请先设置“通知 ${username} 全部”或“通知 ${username} 仅失败”。`
           : "该账号通知设置不可用，请先设置“通知 全部”或“通知 仅失败”。";
       }
       if (typeof store?.enqueueNotification === "function") {
         await call(store, "enqueueNotification", {
-          id: randomUUID(), accountId, kind: "failure", content: "QQ 通知测试：这是一条测试消息。"
+          id: randomUUID(), accountId, kind: "failure", content: "QQ 通知测试：这是一条测试消息。",
+          ...(identity ? {} : { userId: safeUserId })
         });
         return card("测试通知已排队", [{ label: "学号", value: username }]);
       }
