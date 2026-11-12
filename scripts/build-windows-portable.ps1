@@ -160,7 +160,7 @@ foreach ($file in @("worker-multi.mjs", "ucas.mjs", "schedule.mjs", "sign-url.mj
 foreach ($file in (Get-ChildItem -LiteralPath (Join-Path $projectRoot "src\automation") -File -Filter "*.mjs")) {
   Copy-RequiredFile $file.FullName (Join-Path $packageRoot "src\automation\$($file.Name)")
 }
-foreach ($file in @("store.mjs", "events.mjs", "format.mjs")) {
+foreach ($file in @("store.mjs", "events.mjs", "format.mjs", "library.mjs")) {
   Copy-RequiredFile (Join-Path $projectRoot "src\qq\$file") (Join-Path $packageRoot "src\qq\$file")
 }
 Copy-RequiredFile (Join-Path $projectRoot "scripts\portable-launcher.mjs") (Join-Path $packageRoot "scripts\portable-launcher.mjs")

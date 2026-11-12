@@ -92,6 +92,8 @@ export function formatCourseCards(rows, { title = "课程", date } = {}) {
   return cards.join("\n\n");
 }
 
+const LIBRARY_HELP = ["【图书馆】", "查询图书馆座位", "订阅自助区", "启动订阅", "关闭订阅"];
+
 const USER_HELP = [
   "【账号与课程】",
   "帮助",
@@ -112,7 +114,9 @@ const USER_HELP = [
   "【提醒与通知】",
   "通知 全部",
   "通知 仅失败",
-  "通知 关闭"
+  "通知 关闭",
+  "",
+  ...LIBRARY_HELP
 ].join("\n");
 
 const ADMIN_MAIN_HELP = [
@@ -147,7 +151,9 @@ const ADMIN_HELP = [
   "【账号管理】",
   "添加学号 20260001 示例密码",
   "删除学号 20260001",
-  "删除后按提示完成二次确认。"
+  "删除后按提示完成二次确认。",
+  "",
+  ...LIBRARY_HELP
 ].join("\n");
 
 export function helpMessage(isAdmin = false, section = "main") {

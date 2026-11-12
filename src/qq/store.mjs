@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { dataDirectory } from "../automation/store.mjs";
 import { withFileLock } from "../automation/file-lock.mjs";
+import { formatLibraryChange, validSeatCount } from "./library.mjs";
 
 const MODES = new Set(["all", "failure", "off"]);
 const KINDS = new Set(["success", "failure", "schedule_error", "daily_done", "upcoming"]);
@@ -19,6 +20,9 @@ const TERMINAL_HISTORY_LIMIT = 1_000;
 const NOTIFICATION_ID_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 const MAX_NOTIFICATION_IDS = 50_000;
 const MAX_PENDING_NOTIFICATIONS = 1_000;
+export const LIBRARY_NOTIFICATION = "library_seats";
+// Older releases can safely skip these queue entries during rollback.
+const LIBRARY_QUEUE_ACCOUNT = "library-self-study";
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 function emptyState() {
@@ -34,6 +38,7 @@ function emptyState() {
     inbound: {},
     notificationIds: {},
     notifications: [],
+    librarySubscriptions: [],
     notificationStats: { sent: 0, failed: 0 },
     senderLease: null,
     runtimeStatus: null
@@ -130,6 +135,7 @@ async function readState(file) {
     inbound: parsed.inbound && typeof parsed.inbound === "object" ? parsed.inbound : {},
     notificationIds: parsed.notificationIds && typeof parsed.notificationIds === "object" ? parsed.notificationIds : {},
     notifications: Array.isArray(parsed.notifications) ? parsed.notifications : [],
+    librarySubscriptions: Array.isArray(parsed.librarySubscriptions) ? parsed.librarySubscriptions : [],
     notificationStats: parsed.notificationStats && typeof parsed.notificationStats === "object"
       ? { ...defaults.notificationStats, ...parsed.notificationStats }
       : defaults.notificationStats
@@ -460,6 +466,84 @@ export function createQqStore({
     });
   }
 
+  async function subscribeLibrarySeats(userId, { count, observedAt } = {}) {
+    const recipient = cleanId(userId, "QQ 用户");
+    return transact((state) => {
+      if (state.librarySubscriptions.some((entry) => entry.userId === recipient)) return false;
+      const hasSample = validSeatCount(count) && Number.isFinite(observedAt);
+      state.librarySubscriptions.push({
+        userId: recipient,
+        subscriptionId: randomBytes(12).toString("hex"),
+        count: hasSample ? count : null,
+        observedAt: hasSample ? observedAt : 0
+      });
+      return true;
+    });
+  }
+
+  async function unsubscribeLibrarySeats(userId) {
+    const recipient = cleanId(userId, "QQ 用户");
+    return transact((state) => {
+      const before = state.librarySubscriptions.length;
+      state.librarySubscriptions = state.librarySubscriptions.filter((entry) => entry.userId !== recipient);
+      for (const item of state.notifications) {
+        if (item.kind === LIBRARY_NOTIFICATION && item.userId === recipient && ["pending", "sending"].includes(item.status)) {
+          item.status = "cancelled";
+          item.updatedAt = Date.now();
+          delete item.attemptToken;
+          delete item.leaseUntil;
+          delete item.leasePid;
+        }
+      }
+      trimTerminalHistory(state);
+      return before !== state.librarySubscriptions.length;
+    });
+  }
+
+  async function hasLibrarySubscriptions() {
+    return read((state) => state.librarySubscriptions.length > 0);
+  }
+
+  async function observeLibrarySeats(count, observedAt = Date.now()) {
+    if (!validSeatCount(count) || !Number.isFinite(observedAt)) throw new Error("余座观测无效");
+    return transact((state) => {
+      const now = Date.now();
+      let space = MAX_PENDING_NOTIFICATIONS - state.notifications.filter((item) => ["pending", "sending"].includes(item.status)).length;
+      let queued = 0;
+      for (const sub of state.librarySubscriptions) {
+        if (observedAt <= sub.observedAt) continue;
+        sub.observedAt = observedAt;
+        if (validSeatCount(sub.count) && sub.count !== count) {
+          if (space <= 0) continue;
+          state.notifications.push({
+            id: `library-${randomBytes(16).toString("hex")}`,
+            accountId: LIBRARY_QUEUE_ACCOUNT,
+            kind: LIBRARY_NOTIFICATION,
+            userId: sub.userId,
+            subscriptionId: sub.subscriptionId,
+            content: formatLibraryChange(sub.count, count, observedAt),
+            expiresAt: now + 5 * 60_000,
+            status: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now
+          });
+          queued += 1;
+          space -= 1;
+        }
+        sub.count = count;
+      }
+      return queued;
+    });
+  }
+
+  async function canReceiveNotification(userId, delivery) {
+    if (Number.isFinite(delivery.expiresAt) && delivery.expiresAt <= Date.now()) return false;
+    if (delivery.kind === LIBRARY_NOTIFICATION) {
+      return read((state) => state.librarySubscriptions.some((entry) =>
+        entry.userId === userId && entry.subscriptionId === delivery.subscriptionId));
+    }
+    const binding = await getBinding(delivery.accountId, userId);
+    return binding?.userId === userId && allows(binding.mode, delivery.kind);
+  }
+
   async function finishAttempt(id, attemptToken, error = null) {
     return transact((state) => {
       const item = state.notifications.find((entry) => entry.id === id && entry.attemptToken === attemptToken && entry.status === "sending");
@@ -534,9 +618,11 @@ export function createQqStore({
             }
           }
           if (exhausted) trimTerminalHistory(state);
-          const item = state.notifications.find((entry) =>
+          const ready = (entry) =>
             (entry.status === "pending" && entry.nextAttemptAt <= now)
-            || (entry.status === "sending" && (!Number.isFinite(entry.leaseUntil) || entry.leaseUntil <= now || !processIsAlive(entry.leasePid))));
+            || (entry.status === "sending" && (!Number.isFinite(entry.leaseUntil) || entry.leaseUntil <= now || !processIsAlive(entry.leasePid)));
+          const item = state.notifications.find((entry) => entry.kind !== LIBRARY_NOTIFICATION && ready(entry))
+            ?? state.notifications.find(ready);
           if (!item) return { item: null, exhausted };
           item.status = "sending";
           item.attempts += 1;
@@ -551,17 +637,16 @@ export function createQqStore({
         if (!reservation.item) break;
         const reservedItem = reservation.item;
 
-        let exists;
+        let allowed;
         try {
-          exists = await accountExists(reservedItem.accountId);
+          allowed = (reservedItem.kind === LIBRARY_NOTIFICATION || await accountExists(reservedItem.accountId))
+            && await canReceiveNotification(reservedItem.userId, reservedItem);
         } catch (error) {
           const result = await finishAttempt(reservedItem.id, reservedItem.attemptToken, error);
           if (result) counts[result] += 1;
           continue;
         }
-        const binding = await getBinding(reservedItem.accountId, reservedItem.userId);
-        if (!exists || !binding || binding.userId !== reservedItem.userId || !allows(binding.mode, reservedItem.kind)
-          || (Number.isFinite(reservedItem.expiresAt) && reservedItem.expiresAt <= Date.now())) {
+        if (!allowed) {
           await transact((state) => {
             const current = state.notifications.find((entry) => entry.id === reservedItem.id && entry.attemptToken === reservedItem.attemptToken);
             if (current && current.status === "sending") {
@@ -582,6 +667,7 @@ export function createQqStore({
           // have ended. Delivery is at-least-once across process crashes.
           await send(reservedItem.userId, reservedItem.content, {
             accountId: reservedItem.accountId, kind: reservedItem.kind,
+            ...(reservedItem.kind === LIBRARY_NOTIFICATION ? { subscriptionId: reservedItem.subscriptionId } : {}),
             ...(reservedItem.expiresAt === undefined ? {} : { expiresAt: reservedItem.expiresAt })
           });
           const result = await finishAttempt(reservedItem.id, reservedItem.attemptToken);
@@ -642,6 +728,11 @@ export function createQqStore({
     setPreference,
     recordInbound,
     enqueueNotification,
+    subscribeLibrarySeats,
+    unsubscribeLibrarySeats,
+    hasLibrarySubscriptions,
+    observeLibrarySeats,
+    canReceiveNotification,
     drainNotifications,
     getSummary,
     setRuntimeStatus,

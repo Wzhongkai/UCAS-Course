@@ -13,6 +13,7 @@ import {
   withEnrollmentLock
 } from "./enrollment.mjs";
 import { card, helpMessage } from "./format.mjs";
+import { fetchLibrarySeats, formatLibrarySeats, SELF_STUDY_AREA } from "./library.mjs";
 import { createBackendScheduleQuery } from "./backend.mjs";
 import { createCourseCards } from "./course-view.mjs";
 
@@ -158,6 +159,7 @@ function courseOverrideCount(account) {
 export function createCommandHandler({
   store,
   automation = DEFAULT_AUTOMATION,
+  libraryQuery = fetchLibrarySeats,
   ucasClientFactory = (credentials) => new UcasClient(credentials),
   enrollment = { reserve: reserveEnrollmentAttempt, finish: finishEnrollmentAttempt, withLock: withEnrollmentLock }
 } = {}) {
@@ -245,6 +247,25 @@ export function createCommandHandler({
     const text = content.replace(/^\s+/u, "");
     const trimmed = text.trim();
     if (!trimmed) return "请发送“帮助”查看可用指令。";
+
+    if (trimmed === "查询图书馆座位") {
+      try { return formatLibrarySeats(await libraryQuery()); }
+      catch { return card("图书馆余座暂时无法查询", [], { footer: "请稍后重试。" }); }
+    }
+    if (trimmed === "订阅自助区" || trimmed === "启动订阅") {
+      let sample;
+      try { sample = await libraryQuery(); } catch { /* The next successful poll can set the baseline. */ }
+      const count = sample?.counts?.[SELF_STUDY_AREA];
+      const created = await call(store, "subscribeLibrarySeats", safeUserId, { count, observedAt: sample?.observedAt });
+      return card(created ? "自助区订阅已开启" : "自助区正在订阅", [
+        ["区域", SELF_STUDY_AREA],
+        ["当前余座", Number.isSafeInteger(count) ? `${count} 席` : "暂未获取"]
+      ], { footer: "每分钟检查，余座数变化时提醒。发送“关闭订阅”可停止。" });
+    }
+    if (trimmed === "关闭订阅" || trimmed === "取消订阅自助区") {
+      const removed = await call(store, "unsubscribeLibrarySeats", safeUserId);
+      return card(removed ? "自助区订阅已关闭" : "当前未开启自助区订阅", [], { footer: "发送“启动订阅”可开启提醒。" });
+    }
 
     const role = await isAdmin(safeUserId);
     const identity = role && Boolean(await call(store, "getAdminMode", safeUserId));
