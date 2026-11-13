@@ -13,7 +13,7 @@ import {
   withEnrollmentLock
 } from "./enrollment.mjs";
 import { card, helpMessage } from "./format.mjs";
-import { fetchLibrarySeats, formatLibrarySeats, SELF_STUDY_AREA } from "./library.mjs";
+import { fetchLibrarySeats, formatLibrarySeats, LIBRARY_POLL_MS, SELF_STUDY_AREA } from "./library.mjs";
 import { createBackendScheduleQuery } from "./backend.mjs";
 import { createCourseCards } from "./course-view.mjs";
 
@@ -260,7 +260,7 @@ export function createCommandHandler({
       return card(created ? "自助区订阅已开启" : "自助区正在订阅", [
         ["区域", SELF_STUDY_AREA],
         ["当前余座", Number.isSafeInteger(count) ? `${count} 席` : "暂未获取"]
-      ], { footer: "每分钟检查，余座数变化时提醒。发送“关闭订阅”可停止。" });
+      ], { footer: `每 ${LIBRARY_POLL_MS / 1_000} 秒检查一次，余座数变化时提醒。发送“关闭订阅”可停止。` });
     }
     if (trimmed === "关闭订阅" || trimmed === "取消订阅自助区") {
       const removed = await call(store, "unsubscribeLibrarySeats", safeUserId);

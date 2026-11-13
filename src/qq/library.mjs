@@ -2,7 +2,7 @@ import { card, formatShanghaiTime } from "./format.mjs";
 
 const SEAT_URL = "https://seat.ucasr.cn/api/layout/getremainseat";
 export const SELF_STUDY_AREA = "三层中厅自助学习区";
-export const LIBRARY_POLL_MS = 60_000;
+export const LIBRARY_POLL_MS = 15_000;
 const AREAS = [["三层南区", 0], [SELF_STUDY_AREA, 3], ["二层北区", 4]];
 
 export function validSeatCount(value) {
