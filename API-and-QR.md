@@ -259,6 +259,8 @@ const imageDataUrl = await QRCode.toDataURL(signUrl, {
 | `POST /api/automation` | 提交 `{ "action": "password", "accountId": "<账号ID>", "password": "<新密码>" }` 更新密码 |
 | `POST /api/automation` | 提交 `{ "action": "timing", "accountId": "<账号ID>", "timing": { "mode": "fixed", "fixedMinutes": 10 } }` 设置固定提前时间 |
 | `POST /api/automation` | 提交 `{ "action": "timing", "accountId": "<账号ID>", "timing": { "mode": "random", "minMinutes": 10, "maxMinutes": 20 } }` 设置随机提前区间 |
+| `POST /api/automation` | 提交 `{ "action": "sign-method", "accountId": "<账号ID>", "signMethod": "timeTableId" \| "courseSchedId", "resetCourseSignMethodOverrides": true }` 设置默认签到方式（`timeTableId` 为打卡机扫码 / 32 位 UUID，`courseSchedId` 为课堂扫码 / 7 位课程号；可选重置全部单课覆盖） |
+| `POST /api/automation` | 提交 `{ "action": "course-sign-method", "accountId": "<账号ID>", "courseName": "<课程名>", "signMethod": "timeTableId" \| "courseSchedId" \| null }` 设置或清除单门课程的签到方式覆盖 |
 | `POST /api/automation` | 提交 `{ "action": "whitelist", "accountId": "<账号ID>", "courseWhitelist": ["课程名"] }` 设置不打卡课程名单；名单内课程跳过，空数组表示全部课程正常签到 |
 | `POST /api/automation` | 提交 `{ "action": "refresh", "accountId": "<账号ID>" }` 重新查询指定账号课表 |
 | `POST /api/automation` | 提交 `{ "action": "remove", "accountId": "<账号ID>" }` 移除账号并停止其后续任务 |

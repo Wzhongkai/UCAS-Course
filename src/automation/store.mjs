@@ -2,6 +2,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { normalizeCourseName, normalizeCourseWhitelist } from "../schedule.mjs";
+import { DEFAULT_SIGN_METHOD, normalizeSignMethod } from "../sign-url.mjs";
 import { withFileLock } from "./file-lock.mjs";
 
 // Runtime-only persistent storage; it must not be bundled into Next's server output.
@@ -9,6 +10,7 @@ export const dataDirectory = resolve(/*turbopackIgnore: true*/ process.env.AUTO_
 const settingsFile = resolve(dataDirectory, "automation.json");
 const statusFile = resolve(dataDirectory, "status.json");
 const eventsFile = resolve(dataDirectory, "events.json");
+const completedFile = resolve(dataDirectory, "completed.json");
 const DEFAULT_SIGN_TIMING = Object.freeze({
   mode: "fixed",
   fixedMinutes: 10,
@@ -91,8 +93,10 @@ async function readRawSettings() {
       accounts: raw.accounts.map((account) => ({
         ...account,
         timing: normalizeSignTiming(account.timing),
+        signMethod: normalizeSignMethod(account.signMethod),
         courseWhitelist: normalizeCourseWhitelist(account.courseWhitelist),
-        courseTimingOverrides: normalizeCourseTimingOverrides(account.courseTimingOverrides)
+        courseTimingOverrides: normalizeCourseTimingOverrides(account.courseTimingOverrides),
+        courseSignMethodOverrides: normalizeCourseSignMethodOverrides(account.courseSignMethodOverrides)
       }))
     };
   }
@@ -105,8 +109,10 @@ async function readRawSettings() {
         enabled: Boolean(raw.enabled),
         credentials: raw.credentials,
         timing: { ...DEFAULT_SIGN_TIMING },
+        signMethod: DEFAULT_SIGN_METHOD,
         courseWhitelist: [],
         courseTimingOverrides: {},
+        courseSignMethodOverrides: {},
         updatedAt: raw.updatedAt,
         refreshRequestedAt: raw.refreshRequestedAt
       }] : []
@@ -116,7 +122,7 @@ async function readRawSettings() {
 }
 
 export function normalizeSignTiming(value, strict = false) {
-  const inRange = (number) => Number.isInteger(number) && number >= 1 && number <= 120;
+  const inRange = (number) => Number.isInteger(number) && number >= 1 && number <= 30;
   if (value?.mode === "fixed") {
     const fixedMinutes = Number(value.fixedMinutes);
     if (inRange(fixedMinutes)) {
@@ -130,7 +136,7 @@ export function normalizeSignTiming(value, strict = false) {
       return { ...DEFAULT_SIGN_TIMING, mode: "random", minMinutes, maxMinutes };
     }
   }
-  if (strict) throw new Error("签到时间配置无效，请填写 1 到 120 分钟的有效范围");
+  if (strict) throw new Error("签到时间配置无效，请填写 1 到 30 分钟的有效范围");
   return { ...DEFAULT_SIGN_TIMING };
 }
 
@@ -164,6 +170,36 @@ function normalizeCourseTimingOverrides(value, strict = false) {
   return result;
 }
 
+function normalizeCourseSignMethodOverrides(value, strict = false) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    if (strict) throw new Error("课程签到方式配置无效");
+    return {};
+  }
+  const entries = Object.entries(value);
+  if (strict && entries.length > 100) throw new Error("每个账号最多设置 100 门课程的签到方式");
+
+  const result = {};
+  const seen = new Set();
+  for (const [rawName, rawMethod] of entries) {
+    const courseName = normalizeCourseWhitelist([rawName])[0];
+    if (!courseName || courseName.length > 120) {
+      if (strict) throw new Error("课程名称无效或超过 120 个字符");
+      continue;
+    }
+    const key = normalizeCourseName(courseName);
+    if (seen.has(key)) continue;
+    try {
+      Object.defineProperty(result, courseName, {
+        value: normalizeSignMethod(rawMethod, true), enumerable: true, configurable: true, writable: true
+      });
+      seen.add(key);
+    } catch {
+      if (strict) throw new Error("课程签到方式配置无效");
+    }
+  }
+  return result;
+}
+
 function validateCredentials(username, password) {
   if (typeof username !== "string" || typeof password !== "string" || !username.trim() || !password) {
     throw new Error("请同时填写学号和密码");
@@ -178,7 +214,10 @@ export async function updateAutomationSettings(options) {
   return withFileLock(settingsFile, () => mutateAutomationSettings(options));
 }
 
-async function mutateAutomationSettings({ action, accountId, username, password, enabled, timing, courseWhitelist, courseName, resetCourseTimingOverrides }) {
+async function mutateAutomationSettings({
+  action, accountId, username, password, enabled, timing, courseWhitelist, courseName,
+  resetCourseTimingOverrides, signMethod, resetCourseSignMethodOverrides
+}) {
   const current = await readRawSettings();
   const accounts = current.accounts.map((account) => ({ ...account }));
   const index = accounts.findIndex((account) => account.id === accountId);
@@ -196,8 +235,10 @@ async function mutateAutomationSettings({ action, accountId, username, password,
       enabled: enabled ?? true,
       credentials: encryptCredentials(cleanUsername, password),
       timing: { ...DEFAULT_SIGN_TIMING },
+      signMethod: DEFAULT_SIGN_METHOD,
       courseWhitelist: [],
       courseTimingOverrides: {},
+      courseSignMethodOverrides: {},
       updatedAt: now,
       refreshRequestedAt: null
     });
@@ -240,6 +281,29 @@ async function mutateAutomationSettings({ action, accountId, username, password,
     }
     accounts[index].courseTimingOverrides = normalizeCourseTimingOverrides(overrides, true);
     accounts[index].updatedAt = now;
+  } else if (action === "sign-method") {
+    if (index < 0) throw new Error("账号不存在");
+    accounts[index].signMethod = normalizeSignMethod(signMethod, true);
+    if (resetCourseSignMethodOverrides === true) accounts[index].courseSignMethodOverrides = {};
+    accounts[index].updatedAt = now;
+  } else if (action === "course-sign-method" || action === "course-sign-method-clear") {
+    if (index < 0) throw new Error("账号不存在");
+    const normalizedName = typeof courseName === "string" ? normalizeCourseWhitelist([courseName])[0] : "";
+    if (!normalizedName || normalizedName.length > 120) throw new Error("课程名称无效或超过 120 个字符");
+    const overrides = normalizeCourseSignMethodOverrides(accounts[index].courseSignMethodOverrides);
+    const normalizedKey = normalizeCourseName(normalizedName);
+    for (const existingName of Object.keys(overrides)) {
+      if (normalizeCourseName(existingName) === normalizedKey) delete overrides[existingName];
+    }
+    if (action === "course-sign-method-clear" || signMethod === null) {
+      delete overrides[normalizedName];
+    } else {
+      Object.defineProperty(overrides, normalizedName, {
+        value: normalizeSignMethod(signMethod, true), enumerable: true, configurable: true, writable: true
+      });
+    }
+    accounts[index].courseSignMethodOverrides = normalizeCourseSignMethodOverrides(overrides, true);
+    accounts[index].updatedAt = now;
   } else if (action === "whitelist") {
     if (index < 0) throw new Error("账号不存在");
     if (!Array.isArray(courseWhitelist)) throw new Error("课程白名单格式无效");
@@ -267,8 +331,10 @@ export async function readPublicSettings() {
         id: account.id,
         enabled: account.enabled,
         timing: normalizeSignTiming(account.timing),
+        signMethod: normalizeSignMethod(account.signMethod),
         courseWhitelist: normalizeCourseWhitelist(account.courseWhitelist),
         courseTimingOverrides: normalizeCourseTimingOverrides(account.courseTimingOverrides),
+        courseSignMethodOverrides: normalizeCourseSignMethodOverrides(account.courseSignMethodOverrides),
         username,
         usernameHint: `${username.slice(0, 3)}***${username.slice(-3)}`
       };
@@ -292,4 +358,36 @@ export async function readWorkerEvents() {
 
 export async function writeWorkerEvents(events) {
   await writeJson(eventsFile, events.slice(-100));
+}
+
+export function completionKeyFor(accountId, groupKey) {
+  return accountId === "legacy" ? groupKey : `${accountId}:${groupKey}`;
+}
+
+function pruneCompletedKeys(keys, cutoffDate) {
+  const next = new Set();
+  for (const key of keys) {
+    if (typeof key !== "string" || !key) continue;
+    if (cutoffDate) {
+      const date = key.match(/(?:^|:)(\d{8}):/)?.[1];
+      if (date && date < cutoffDate) continue;
+    }
+    next.add(key);
+  }
+  return [...next];
+}
+
+export async function readCompletedKeys() {
+  const data = await readJson(completedFile, { completed: [] });
+  return Array.isArray(data?.completed) ? data.completed.filter((key) => typeof key === "string" && key) : [];
+}
+
+export async function recordCompletedKeys(keys, cutoffDate = "") {
+  const additions = Array.isArray(keys) ? keys.filter((key) => typeof key === "string" && key) : [];
+  return withFileLock(completedFile, async () => {
+    const existing = await readCompletedKeys();
+    const merged = pruneCompletedKeys([...existing, ...additions], cutoffDate);
+    await writeJson(completedFile, { completed: merged });
+    return merged;
+  });
 }

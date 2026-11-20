@@ -1,14 +1,24 @@
 import { createServer } from "node:net";
-import { mkdir, readFile, writeFile, appendFile } from "node:fs/promises";
+import { mkdir, appendFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { readAutomationSettings, writeWorkerStatus, readWorkerEvents, writeWorkerEvents, encryptionReady, dataDirectory } from "./automation/store.mjs";
+import {
+  completionKeyFor,
+  readAutomationSettings,
+  readCompletedKeys,
+  recordCompletedKeys,
+  writeWorkerStatus,
+  readWorkerEvents,
+  writeWorkerEvents,
+  encryptionReady,
+  dataDirectory
+} from "./automation/store.mjs";
 import { accessReady } from "./automation/auth.mjs";
 import { UcasClient } from "./ucas.mjs";
-import { filterCoursesByWhitelist, resolveCourseTiming, scheduleOutcome, shanghaiDate, signTargetForAttempt, signWindow, timeAtSix } from "./schedule.mjs";
+import { effectiveSignMethodForGroup, filterCoursesByWhitelist, resolveCourseSignMethod, resolveCourseTiming, scheduleOutcome, shanghaiDate, signTargetForAttempt, signTargetsForMethod, signWindow, timeAtSix } from "./schedule.mjs";
+import { DEFAULT_SIGN_METHOD, signMethodLabel } from "./sign-url.mjs";
 import { createQqStore } from "./qq/store.mjs";
 import { expiredNotification, scheduleErrorNotification, successNotification, upcomingNotification } from "./qq/events.mjs";
 
-const completedFile = resolve(dataDirectory, "completed.json");
 const logFile = resolve(dataDirectory, "auto-sign.log");
 const states = new Map();
 const completed = new Set();
@@ -50,12 +60,16 @@ function label(state, group) {
 }
 
 function completionKey(state, group) {
-  return state.id === "legacy" ? group.key : `${state.id}:${group.key}`;
+  return completionKeyFor(state.id, group.key);
 }
 
 function signWindowForGroup(state, group) {
   const timing = resolveCourseTiming(state.timing, state.courseTimingOverrides, group.first.courseName);
   return signWindow(group, timing, state.id);
+}
+
+function signMethodForGroup(state, group) {
+  return resolveCourseSignMethod(state.signMethod, state.courseSignMethodOverrides, group.first.courseName);
 }
 
 function qqNotificationsEnabled() {
@@ -77,25 +91,42 @@ async function enqueueQqNotification(event) {
 
 async function loadCompleted() {
   try {
-    const data = JSON.parse(await readFile(completedFile, "utf8"));
-    for (const key of Array.isArray(data.completed) ? data.completed : []) {
-      if (typeof key === "string") completed.add(key);
+    for (const key of await readCompletedKeys()) {
+      completed.add(key);
     }
-  } catch (error) {
-    if (error?.code !== "ENOENT") log("历史签到记录读取失败，将参考课表签到状态。");
+  } catch {
+    log("历史签到记录读取失败，将参考课表签到状态。");
   }
 }
 
-async function saveCompleted() {
+async function syncCompleted() {
+  try {
+    const stored = await readCompletedKeys();
+    for (const key of stored) {
+      if (completed.has(key)) continue;
+      completed.add(key);
+      for (const state of states.values()) {
+        const matched = state.groups.find((group) => completionKey(state, group) === key);
+        if (matched && !state.messages.get(matched.key)) {
+          state.messages.set(matched.key, "已通过立即签到完成，跳过计划尝试");
+          log(`${label(state, matched)}：检测到已完成立即签到，计划任务自动跳过。`);
+        }
+      }
+    }
+  } catch {
+    // Ignore transient read errors; in-memory state stays authoritative until next tick.
+  }
+}
+
+async function saveCompleted(newKeys = []) {
   const cutoff = shanghaiDate(Date.now() - 14 * 24 * 60 * 60_000);
   for (const key of completed) {
     const date = key.match(/(?:^|:)(\d{8}):/)?.[1];
     if (date && date < cutoff) completed.delete(key);
   }
-  const snapshot = JSON.stringify({ completed: [...completed] }, null, 2);
   completedWrite = completedWrite.catch(() => {}).then(async () => {
-    await mkdir(dataDirectory, { recursive: true });
-    await writeFile(completedFile, snapshot, "utf8");
+    const merged = await recordCompletedKeys(newKeys.length ? newKeys : [...completed], cutoff);
+    for (const key of merged) completed.add(key);
   });
   await completedWrite;
 }
@@ -106,7 +137,7 @@ async function markCompleted(state, group, message, notification = null) {
   if (!completed.has(key)) {
     completed.add(key);
     log(`${label(state, group)}：${message}。同一时间段的其他课程入口不再尝试。`);
-    try { await saveCompleted(); }
+    try { await saveCompleted([key]); }
     catch { log("签到记录保存失败，本次运行仍会停止重试。"); }
   }
   if (notification) {
@@ -129,7 +160,9 @@ function createState(account) {
     refreshVersion: account.refreshRequestedAt,
     enabled: Boolean(account.enabled),
     timing: account.timing,
+    signMethod: account.signMethod ?? DEFAULT_SIGN_METHOD,
     courseTimingOverrides: account.courseTimingOverrides ?? {},
+    courseSignMethodOverrides: account.courseSignMethodOverrides ?? {},
     courseWhitelist: account.courseWhitelist,
     client: account.enabled ? new UcasClient(account.credentials) : null,
     activeDate: "",
@@ -153,6 +186,7 @@ function createState(account) {
 async function syncSettings(now) {
   if (now - lastConfigAt < 3_000) return;
   lastConfigAt = now;
+  await syncCompleted();
   try {
     if (!encryptionReady()) throw new Error("AUTO_SIGN_SECRET 未配置或格式不正确");
     if (!accessReady()) throw new Error("UCAS_ACCESS_KEY 未配置或长度不足");
@@ -253,23 +287,28 @@ async function timestampForSign(state) {
 async function attemptSign(state, group) {
   const count = (state.attempts.get(group.key) ?? 0) + 1;
   state.attempts.set(group.key, count);
-  const target = signTargetForAttempt(group, count);
+  const preferredMethod = signMethodForGroup(state, group);
+  const target = signTargetForAttempt(group, count, preferredMethod);
   let delay = 10_000;
   try {
     const timestamp = await timestampForSign(state);
-    const { data: result, signParameter } = await state.client.sign({ uuid: target.uuid, courseSchedId: target.legacyId }, timestamp);
+    const { data: result, signParameter } = await state.client.sign(
+      { uuid: target.uuid, courseSchedId: target.legacyId, method: preferredMethod },
+      timestamp
+    );
+    const methodText = signMethodLabel(signParameter);
     if (result?.STATUS === "0" && result?.result?.stuSignStatus === "1") {
-      await markCompleted(state, group, `第 ${count} 次尝试成功，课程入口 ${target.id}${result.result.stuSignId ? `，记录 ${result.result.stuSignId}` : ""}`, { source: "attempt", signParameter });
+      await markCompleted(state, group, `第 ${count} 次尝试成功（${methodText}），课程入口 ${target.id || target.uuid}${result.result.stuSignId ? `，记录 ${result.result.stuSignId}` : ""}`, { source: "attempt", signParameter });
       return;
     }
     const reason = result?.result?.msg ?? result?.ERRMSG ?? result?.msg ?? result?.message ?? "上游未确认成功";
-    const message = safeText(`第 ${count} 次未成功，课程入口 ${target.id}：${String(reason)}`);
+    const message = safeText(`第 ${count} 次未成功（${methodText}），课程入口 ${target.id || target.uuid}：${String(reason)}`);
     state.messages.set(group.key, message);
     log(`${label(state, group)}：${message}`);
   } catch (error) {
     if (error?.status === 401) state.client.sessionId = "";
     if (error?.status === 429) delay = Math.max(10_000, error.retryAfterMs ?? 60_000);
-    const message = safeText(`第 ${count} 次请求失败，课程入口 ${target.id}：${error instanceof Error ? error.message : "未知错误"}`);
+    const message = safeText(`第 ${count} 次请求失败，课程入口 ${target.id || target.uuid}：${error instanceof Error ? error.message : "未知错误"}`);
     state.messages.set(group.key, message);
     log(`${label(state, group)}：${message}`);
   } finally {
@@ -341,6 +380,9 @@ async function tickAccount(state, now) {
 function publicPlan(state, now) {
   return state.groups.map((group) => {
     const window = signWindowForGroup(state, group);
+    const signMethod = signMethodForGroup(state, group);
+    const targets = signTargetsForMethod(group, signMethod);
+    const effectiveSignMethod = effectiveSignMethodForGroup(group, signMethod);
     let status = "待开始";
     if (completed.has(completionKey(state, group))) status = "已签到";
     else if (now > window.stopAt) status = "未成功，已停止";
@@ -354,7 +396,9 @@ function publicPlan(state, now) {
       courseIds: [...new Set(group.courses.map((course) => course.id))],
       start: group.start,
       end: group.end,
-      targetCount: group.signTargets.length,
+      targetCount: targets.length,
+      signMethod,
+      effectiveSignMethod,
       attemptAt: window.attemptAt,
       state: status,
       attempts: state.attempts.get(group.key) ?? 0,

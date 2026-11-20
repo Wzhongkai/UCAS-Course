@@ -1,4 +1,5 @@
 import { card, formatShanghaiTime } from "./format.mjs";
+import { SIGN_METHOD_LABELS } from "../sign-url.mjs";
 
 function cleanLabel(value, fallback) {
   const clean = String(value ?? "").trim().replace(/\s+/gu, " ");
@@ -14,8 +15,8 @@ export function successNotification({ accountId, completionKey, courseName, acco
   const course = cleanLabel(courseName, "未命名课程");
   const fromSchedule = source === "schedule";
   const method = fromSchedule ? "课表确认（方式未知）"
-    : signParameter === "timeTableId" ? "UUID"
-      : signParameter === "courseSchedId" ? "courseSchedId" : "未知";
+    : signParameter === "timeTableId" ? SIGN_METHOD_LABELS.timeTableId
+      : signParameter === "courseSchedId" ? SIGN_METHOD_LABELS.courseSchedId : "未知";
   return {
     id: `completion:${completionKey}:success`,
     accountId,
@@ -23,8 +24,8 @@ export function successNotification({ accountId, completionKey, courseName, acco
     content: card(fromSchedule ? "课表显示已签到" : "签到成功", [
       accountField(accountHint),
       { label: "课程", value: course },
-      { label: "方法", value: method }
-    ])
+      { label: "方式", value: method }
+    ], { icon: "✅" })
   };
 }
 
@@ -38,7 +39,7 @@ export function expiredNotification({ accountId, completionKey, courseName, acco
       accountField(accountHint),
       { label: "课程", value: course },
       { label: "结果", value: "课程已结束，请人工核查。" }
-    ])
+    ], { icon: "⚠️" })
   };
 }
 
@@ -52,7 +53,7 @@ export function scheduleErrorNotification({ accountId, date, accountHint }) {
       accountField(accountHint),
       { label: "日期", value: safeDate },
       { label: "说明", value: "查询失败，5 分钟后自动重试。" }
-    ])
+    ], { icon: "⚠️" })
   };
 }
 
@@ -74,6 +75,6 @@ export function upcomingNotification({ accountId, completionKey, courseName, acc
       accountField(accountHint),
       { label: "课程", value: course },
       { label: "计划尝试", value: `${time}（北京时间）` }
-    ])
+    ], { icon: "⏰" })
   };
 }

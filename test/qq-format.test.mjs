@@ -8,9 +8,9 @@ test("card uses plain-text fields, filters blank values, and separates its foote
     ["教师", "张老师"],
     { label: "教师", value: "  " },
     { label: "空字段", value: null }
-  ], { footer: "请及时查看" }), "【标题】\n\n课程：数据结构\n教师：张老师\n\n请及时查看");
-  assert.equal(card("标题", [{ label: "课程", value: "" }]), "【标题】");
-  assert.equal(card("删除确认", [], { footer: "请复制以下指令：\n删除账号 20260001 确认 ABC123" }), "【删除确认】\n\n请复制以下指令：\n删除账号 20260001 确认 ABC123");
+  ], { footer: "请及时查看" }), "▸ 标题\n· 课程：数据结构\n· 教师：张老师\n\n请及时查看");
+  assert.equal(card("标题", [{ label: "课程", value: "" }], { icon: "✅" }), "✅ 标题");
+  assert.equal(card("删除确认", [], { footer: "请复制以下指令：\n删除账号 20260001 确认 ABC123" }), "▸ 删除确认\n\n请复制以下指令：\n删除账号 20260001 确认 ABC123");
 });
 
 test("Shanghai time formatter handles dates and clock-only output", () => {
@@ -26,43 +26,41 @@ test("course rows render as separate readable cards and parse clock times using 
     { name: "英语", start: Date.parse("2026-10-15T03:00:00.000Z"), end: Date.parse("2026-10-15T04:00:00.000Z"), state: "待开始", attempts: 0 }
   ], { title: "今日课程", date: "20261015" });
 
-  assert.match(result, /【今日课程】\n\n课程：数据结构\n时间：2026-10-15 09:00–10:30/u);
-  assert.match(result, /教师：张老师\n教室：教一-101/u);
-  assert.match(result, /\n\n【今日课程】\n\n课程：英语\n时间：2026-10-15 11:00–12:00/u);
-  assert.match(result, /状态：待开始\n尝试：0 次/u);
+  assert.match(result, /▸ 今日课程\n· 课程：数据结构\n· 时间：2026-10-15 09:00–10:30/u);
+  assert.match(result, /· 教师：张老师\n· 教室：教一-101/u);
+  assert.match(result, /\n\n▸ 今日课程\n· 课程：英语\n· 时间：2026-10-15 11:00–12:00/u);
+  assert.match(result, /· 状态：待开始\n· 尝试：0 次/u);
   assert.equal(formatCourseCards([]), "");
 });
 
-test("help menus show concise copyable examples and keep admin commands private", () => {
+test("help menus show distinct user and admin directories and keep admin commands private", () => {
   const userHelp = helpMessage(false);
-  const adminHelp = helpMessage(true);
+  const adminPersonalHelp = helpMessage(true);
   const adminOnlyHelp = helpMessage(true, "admin");
   const userAdminHelp = helpMessage(false, "admin");
 
-  assert.match(userHelp, /【账号与课程】/u);
-  assert.match(userHelp, /【打卡设置】/u);
-  assert.match(userHelp, /【提醒与通知】/u);
-  assert.match(userHelp, /绑定学号 学号 密码\n查询课表/u);
-  assert.match(userHelp, /开启打卡\n关闭打卡\n启动打卡 高等数学\n停止打卡 高等数学/u);
-  assert.match(userHelp, /签到时间 所有 固定 10\n签到时间 所有 随机 5 10\n签到时间 高等数学 固定 10\n签到时间 高等数学 随机 5 10\n停止打卡课程名单/u);
-  assert.equal(userHelp.split("\n").filter((line) => line.startsWith("通知 ")).length, 3);
-  assert.match(userHelp, /通知 全部\n通知 仅失败\n通知 关闭/u);
-  assert.doesNotMatch(userHelp, /^(?:我的ID|账号列表|状态|查询课程|课表|单课时间|不打卡名单|解绑|测试通知)$/mu);
-  assert.doesNotMatch(userHelp, /管理员菜单|绑定 CODE|删除账号|示例学号|20260001/u);
-  assert.equal(adminHelp, userHelp);
+  assert.match(userHelp, /📖 使用指南/u);
+  assert.match(userHelp, /▸ 账号与查询\n  绑定学号 学号 密码\n  查询课表 \/ 状态 \/ 解绑/u);
+  assert.match(userHelp, /▸ 打卡操作\n  立即签到 课程名 \[打卡机扫码\|课堂扫码\]\n  开启打卡 \/ 关闭打卡\n  启动打卡 课程名 \/ 停止打卡 课程名\n  停止打卡课程名单/u);
+  assert.match(userHelp, /▸ 签到时间（提前 1～30 分钟）\n  签到时间 所有\|课程名 固定 10\n  签到时间 所有\|课程名 随机 5 10/u);
+  assert.match(userHelp, /▸ 签到方式\n  签到方式 所有\|课程名 打卡机扫码\|课堂扫码/u);
+  assert.match(userHelp, /▸ 消息通知\n  通知 全部\|仅失败\|关闭/u);
+  assert.match(userHelp, /▸ 图书馆余座（免绑定）\n  查询图书馆座位\n  订阅自助区 \/ 关闭订阅/u);
+  assert.doesNotMatch(userHelp, /UUID|7位|120|管理员|绑定码|添加学号|删除学号|更新密码|日志|20260001/u);
   assert.equal(userAdminHelp, "");
-  assert.match(adminOnlyHelp, /【管理员帮助】/u);
-  assert.match(adminOnlyHelp, /【管理员 · 常用指令】/u);
-  assert.match(adminOnlyHelp, /绑定学号 学号 密码\n查询课表 20260001\n开启打卡 20260001\n关闭打卡 20260001/u);
-  assert.match(adminOnlyHelp, /停止打卡 20260001 高等数学\n启动打卡 20260001 高等数学/u);
-  assert.match(adminOnlyHelp, /签到时间 20260001 所有 固定 10\n签到时间 20260001 所有 随机 5 10\n签到时间 20260001 高等数学 固定 10\n签到时间 20260001 高等数学 随机 5 10/u);
-  assert.match(adminOnlyHelp, /停止打卡课程名单 20260001\n通知 20260001 全部\n通知 20260001 仅失败\n通知 20260001 关闭/u);
-  assert.match(adminOnlyHelp, /管理员操作请先指定学号/u);
-  assert.match(adminOnlyHelp, /管理员默认以本人模式操作。\n进入管理员模式\n退出管理员模式\n管理员模式下所有账号指令都必须带学号。/u);
-  assert.match(adminOnlyHelp, /切换模式只改变可操作范围，不影响后台打卡。/u);
-  assert.match(adminOnlyHelp, /【账号管理】\n添加学号 20260001 示例密码\n删除学号 20260001\n删除后按提示完成二次确认。/u);
-  assert.doesNotMatch(adminOnlyHelp, /单课时间|不打卡名单 20260001|管理菜单|绑定 CODE|添加账号|删除账号|更新密码|刷新课表|日志/u);
-  assert.ok(adminHelp.length <= 1300);
+
+  assert.ok(adminPersonalHelp.startsWith(userHelp));
+  assert.match(adminPersonalHelp, /▸ 管理员入口\n  进入管理员模式 \/ 管理员帮助/u);
+
+  assert.notEqual(adminOnlyHelp, userHelp);
+  assert.match(adminOnlyHelp, /🛠️ 管理员目录/u);
+  assert.match(adminOnlyHelp, /▸ 模式切换\n  进入管理员模式 \/ 退出管理员模式/u);
+  assert.match(adminOnlyHelp, /▸ 查看与诊断\n  账号列表\n  状态 学号 \/ 查询课表 学号 \/ 刷新课表 学号\n  日志 \/ 日志 学号/u);
+  assert.match(adminOnlyHelp, /▸ 账号管理\n  添加学号 学号 密码\n  删除学号 学号（需二次确认）\n  更新密码 学号 新密码\n  绑定码 学号 \/ 解绑 学号（解绑该学号全部 QQ）/u);
+  assert.match(adminOnlyHelp, /▸ 打卡与方式代管\n  立即签到 学号 课程名 \[打卡机扫码\|课堂扫码\]\n  开启打卡 学号 \/ 关闭打卡 学号\n  启动打卡 学号 课程名 \/ 停止打卡 学号 课程名\n  停止打卡课程名单 学号\n  签到时间 学号 所有\|课程名 固定 10\n  签到时间 学号 所有\|课程名 随机 5 10\n  签到方式 学号 所有\|课程名 打卡机扫码\|课堂扫码/u);
+  assert.match(adminOnlyHelp, /▸ 全局通知（对该学号全部 QQ 生效）\n  通知 学号 全部\|仅失败\|关闭\n  测试通知 学号/u);
+  assert.doesNotMatch(adminOnlyHelp, /UUID|7位|120|图书馆余座|绑定学号 学号 密码|20260001/u);
+  assert.ok(adminPersonalHelp.length <= 1300);
   assert.ok(userHelp.length <= 1300);
   assert.ok(adminOnlyHelp.length <= 1300);
 });

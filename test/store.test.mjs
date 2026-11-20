@@ -74,6 +74,36 @@ test("多账号配置加密保存，管理状态不泄露密码并兼容旧账�
     });
     await store.updateAutomationSettings({ action: "course-timing-clear", accountId: firstId, courseName: "高等 数学" });
     assert.deepEqual((await store.readPublicSettings()).accounts[0].courseTimingOverrides, {});
+    assert.equal((await store.readPublicSettings()).accounts[0].signMethod, "timeTableId");
+    assert.deepEqual((await store.readPublicSettings()).accounts[0].courseSignMethodOverrides, {});
+    await store.updateAutomationSettings({ action: "sign-method", accountId: firstId, signMethod: "courseSchedId" });
+    assert.equal((await store.readPublicSettings()).accounts[0].signMethod, "courseSchedId");
+    await store.updateAutomationSettings({
+      action: "course-sign-method", accountId: firstId, courseName: "  高等  数学 ", signMethod: "timeTableId"
+    });
+    assert.deepEqual((await store.readPublicSettings()).accounts[0].courseSignMethodOverrides, { "高等 数学": "timeTableId" });
+    await store.updateAutomationSettings({
+      action: "sign-method", accountId: firstId, signMethod: "timeTableId"
+    });
+    assert.deepEqual((await store.readPublicSettings()).accounts[0].courseSignMethodOverrides, { "高等 数学": "timeTableId" }, "更新默认方式时保留单课覆盖");
+    await store.updateAutomationSettings({
+      action: "sign-method", accountId: firstId, signMethod: "courseSchedId", resetCourseSignMethodOverrides: true
+    });
+    assert.equal((await store.readPublicSettings()).accounts[0].signMethod, "courseSchedId");
+    assert.deepEqual((await store.readPublicSettings()).accounts[0].courseSignMethodOverrides, {}, "重置全部方式时清除单课覆盖");
+    await store.updateAutomationSettings({
+      action: "course-sign-method", accountId: firstId, courseName: "高等 数学", signMethod: "timeTableId"
+    });
+    await store.updateAutomationSettings({
+      action: "course-sign-method-clear", accountId: firstId, courseName: "高等 数学"
+    });
+    assert.deepEqual((await store.readPublicSettings()).accounts[0].courseSignMethodOverrides, {});
+    await assert.rejects(store.updateAutomationSettings({
+      action: "sign-method", accountId: firstId, signMethod: "invalid"
+    }), /签到方式无效/);
+    await assert.rejects(store.updateAutomationSettings({
+      action: "course-sign-method", accountId: firstId, courseName: "   ", signMethod: "courseSchedId"
+    }), /课程名称无效/);
     await assert.rejects(store.updateAutomationSettings({
       action: "course-timing", accountId: firstId, courseName: "数学",
       timing: { mode: "random", minMinutes: 30, maxMinutes: 10 }
@@ -92,6 +122,11 @@ test("多账号配置加密保存，管理状态不泄露密码并兼容旧账�
       accountId: firstId,
       timing: { mode: "random", minMinutes: 30, maxMinutes: 10 }
     }), /签到时间配置无效/);
+    await assert.rejects(store.updateAutomationSettings({
+      action: "timing",
+      accountId: firstId,
+      timing: { mode: "fixed", fixedMinutes: 31 }
+    }), /1 到 30 分钟/);
     await assert.rejects(store.updateAutomationSettings({ action: "add", username: "20260001", password: "different" }), /已添加/);
     await store.updateAutomationSettings({ action: "add", username: "20260002", password: "another-secret" });
     assert.equal((await store.readPublicSettings()).accounts.length, 2);
@@ -105,6 +140,9 @@ test("多账号配置加密保存，管理状态不泄露密码并兼容旧账�
     assert.equal(recentEvents.length, 100);
     assert.equal(recentEvents[0].message, "记录 5");
     assert.equal(recentEvents.at(-1).message, "记录 104");
+    await store.recordCompletedKeys(["acct-1:20260901:1234567:1", "acct-1:20260920:1234567:2"], "20260910");
+    await store.recordCompletedKeys(["acct-1:20260920:1234567:2", "acct-1:20260921:1234568:3"], "20260910");
+    assert.deepEqual(await store.readCompletedKeys(), ["acct-1:20260920:1234567:2", "acct-1:20260921:1234568:3"]);
     await store.updateAutomationSettings({ action: "remove", accountId: firstId });
     const cleared = await store.readPublicSettings();
     assert.equal(cleared.accounts.length, 1);

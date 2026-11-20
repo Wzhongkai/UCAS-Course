@@ -1,4 +1,4 @@
-import { normalizeCourseSchedId, normalizeCourseUuid } from "./sign-url.mjs";
+import { DEFAULT_SIGN_METHOD, normalizeCourseSchedId, normalizeCourseUuid, normalizeSignMethod, selectSignIdentifier } from "./sign-url.mjs";
 
 const SHANGHAI_OFFSET = "+08:00";
 
@@ -44,17 +44,31 @@ export function resolveCourseTiming(defaultTiming, overrides, courseName) {
 
   for (const [name, timing] of Object.entries(overrides)) {
     if (normalizeCourseName(name) !== normalizedName) continue;
-    if (timing?.mode === "fixed" && Number.isInteger(timing.fixedMinutes) && timing.fixedMinutes >= 1 && timing.fixedMinutes <= 120) {
+    if (timing?.mode === "fixed" && Number.isInteger(timing.fixedMinutes) && timing.fixedMinutes >= 1 && timing.fixedMinutes <= 30) {
       return timing;
     }
     if (timing?.mode === "random" && Number.isInteger(timing.minMinutes) && Number.isInteger(timing.maxMinutes)
-      && timing.minMinutes >= 1 && timing.maxMinutes <= 120 && timing.minMinutes <= timing.maxMinutes) {
+      && timing.minMinutes >= 1 && timing.maxMinutes <= 30 && timing.minMinutes <= timing.maxMinutes) {
       return timing;
     }
     return defaultTiming;
   }
 
   return defaultTiming;
+}
+
+export function resolveCourseSignMethod(defaultMethod, overrides, courseName) {
+  const fallback = normalizeSignMethod(defaultMethod);
+  const normalizedName = normalizeCourseName(courseName);
+  if (!normalizedName || !overrides || typeof overrides !== "object" || Array.isArray(overrides)) return fallback;
+
+  for (const [name, method] of Object.entries(overrides)) {
+    if (normalizeCourseName(name) !== normalizedName) continue;
+    if (method === "timeTableId" || method === "courseSchedId") return method;
+    return fallback;
+  }
+
+  return fallback;
 }
 
 export function normalizeCourseWhitelist(value) {
@@ -126,6 +140,8 @@ export function groupCourses(courses, date) {
       // Existing completion records and randomized times still use the old slot key.
       key: `${date}:${first.legacyId || first.uuid}:${slot.start}`,
       first,
+      uuidTargets: [...uuidTargets.values()],
+      numericTargets: [...numericTargets.values()],
       signTargets: [...(uuidTargets.size ? uuidTargets : numericTargets).values()],
       start: slot.start,
       firstEnd: slot.end,
@@ -177,8 +193,27 @@ export function signWindow(group, timing, accountSeed = "") {
   };
 }
 
-export function signTargetForAttempt(group, attemptNumber) {
-  const targets = group?.signTargets ?? [];
+export function signTargetsForMethod(group, preferredMethod = DEFAULT_SIGN_METHOD) {
+  const method = normalizeSignMethod(preferredMethod);
+  const uuidTargets = Array.isArray(group?.uuidTargets) ? group.uuidTargets : null;
+  const numericTargets = Array.isArray(group?.numericTargets) ? group.numericTargets : null;
+  if (!uuidTargets && !numericTargets) return group?.signTargets ?? [];
+  const uuids = uuidTargets ?? [];
+  const numerics = numericTargets ?? [];
+  if (method === "courseSchedId") return numerics.length ? numerics : uuids;
+  return uuids.length ? uuids : numerics;
+}
+
+export function effectiveSignMethodForGroup(group, preferredMethod = DEFAULT_SIGN_METHOD) {
+  const method = normalizeSignMethod(preferredMethod);
+  const targets = signTargetsForMethod(group, method);
+  const firstTarget = targets[0];
+  if (!firstTarget) return method;
+  return selectSignIdentifier(firstTarget.uuid, firstTarget.legacyId ?? firstTarget.id, method)?.name ?? method;
+}
+
+export function signTargetForAttempt(group, attemptNumber, preferredMethod = DEFAULT_SIGN_METHOD) {
+  const targets = signTargetsForMethod(group, preferredMethod);
   if (targets.length === 0) return null;
   const index = Math.max(0, Number(attemptNumber) - 1) % targets.length;
   return targets[index];

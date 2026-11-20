@@ -39,6 +39,9 @@ export async function POST(request) {
       username: body?.username,
       password: body?.password,
       timing: body?.timing,
+      resetCourseTimingOverrides: body?.resetCourseTimingOverrides,
+      signMethod: body?.signMethod,
+      resetCourseSignMethodOverrides: body?.resetCourseSignMethodOverrides,
       courseWhitelist: body?.courseWhitelist,
       courseName: body?.courseName
     });

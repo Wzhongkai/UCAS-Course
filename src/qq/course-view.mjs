@@ -1,7 +1,18 @@
-import { groupCourses, normalizeCourseName, parseCourseTime, resolveCourseTiming, signWindow } from "../schedule.mjs";
+import { effectiveSignMethodForGroup, groupCourses, normalizeCourseName, parseCourseTime, resolveCourseSignMethod, resolveCourseTiming, signWindow } from "../schedule.mjs";
+import { signMethodLabel } from "../sign-url.mjs";
 import { card, formatShanghaiTime } from "./format.mjs";
 
 const WORKER_STATES = new Set(["待开始", "已签到", "未成功，已停止", "重试中", "准备中"]);
+const CIRCLED_NUMBERS = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"];
+
+function courseBadge(index) {
+  return CIRCLED_NUMBERS[index - 1] ?? `${index}.`;
+}
+
+function displayDate(date) {
+  const raw = String(date ?? "");
+  return /^\d{8}$/u.test(raw) ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}` : raw;
+}
 
 function text(value, fallback = "未提供") {
   const result = String(value ?? "").normalize("NFKC").replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 120);
@@ -34,7 +45,12 @@ export function createCourseCards(courses, { account, date, workerStatus, now = 
     if (room) row.rooms.add(room);
     rows.set(key, row);
   }
-  if (!rows.size) return [card(account.username, [{ label: "日期", value: date }, { label: "查询结果", value: "当天没有课程。" }])];
+  if (!rows.size) {
+    return [card(`当天课表 · ${displayDate(date)}`, [
+      { label: "学号", value: account.username },
+      { label: "查询结果", value: "当天没有课程。" }
+    ], { icon: "📅" })];
+  }
 
   const groups = groupCourses(source, date);
   const skipped = new Set((account.courseWhitelist ?? []).map(normalizeCourseName));
@@ -43,15 +59,19 @@ export function createCourseCards(courses, { account, date, workerStatus, now = 
   const state = fresh && Array.isArray(workerStatus?.accounts)
     ? workerStatus.accounts.find((entry) => entry.id === account.id && entry.date === date && entry.enabled !== false)
     : null;
-  const cards = [card("当天课表", [
+  const cards = [card(`当天课表 · ${displayDate(date)}`, [
     { label: "学号", value: account.username },
-    { label: "日期", value: date },
     { label: "课程数", value: `${rows.size} 门` }
-  ])];
+  ], { icon: "📅" })];
   for (const row of [...rows.values()].sort((left, right) => (left.start ?? Infinity) - (right.start ?? Infinity))) {
     const group = groups.find((entry) => entry.start === row.start && entry.end === row.end
       && String(entry.first.courseName ?? "").trim() === row.identityName);
     const timing = resolveCourseTiming(account.timing, account.courseTimingOverrides, row.name);
+    const preferredMethod = resolveCourseSignMethod(account.signMethod, account.courseSignMethodOverrides, row.name);
+    const effectiveMethod = group ? effectiveSignMethodForGroup(group, preferredMethod) : preferredMethod;
+    const methodText = group && effectiveMethod !== preferredMethod
+      ? `${signMethodLabel(preferredMethod)}（缺少对应编号，回退${signMethodLabel(effectiveMethod)}）`
+      : signMethodLabel(preferredMethod);
     const window = group ? signWindow(group, timing, account.id) : null;
     const plan = Array.isArray(state?.plan) ? state.plan.find((entry) => entry.start === row.start && entry.end === row.end
       && String(entry.courseName ?? "").trim() === row.identityName
@@ -71,15 +91,15 @@ export function createCourseCards(courses, { account, date, workerStatus, now = 
       attempt = `${formatShanghaiTime(window.attemptAt, { date: false })}（${timingLabel(timing)}）`;
       status = WORKER_STATES.has(plan?.state) ? plan.state : "等待后台更新";
     }
-    cards.push(card(`课程 ${cards.length}`, [
-      { label: "课程", value: row.name },
+    cards.push(card(row.name, [
       { label: "教师", value: [...row.teachers].join(" / ") || "未提供" },
-      { label: "课程时间", value: row.start !== null && row.end !== null
+      { label: "时间", value: row.start !== null && row.end !== null
         ? `${formatShanghaiTime(row.start)}–${formatShanghaiTime(row.end, { date: false })}` : "未提供有效时间" },
       { label: "教室", value: [...row.rooms].join(" / ") || "未提供" },
-      { label: "签到时间", value: attempt },
-      { label: "打卡状态", value: status }
-    ]));
+      { label: "计划", value: attempt },
+      { label: "方式", value: methodText },
+      { label: "状态", value: status }
+    ], { icon: courseBadge(cards.length) }));
   }
   return cards;
 }

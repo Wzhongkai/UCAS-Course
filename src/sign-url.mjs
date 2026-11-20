@@ -1,5 +1,41 @@
 const SIGN_URL = "https://iclass.ucas.edu.cn:8181/app/course/stu_scan_sign.action";
 
+/**
+ * @typedef {"timeTableId" | "courseSchedId"} SignMethod
+ * @typedef {{ name: SignMethod, value: string }} SignIdentifier
+ */
+
+/** @type {SignMethod} */
+export const DEFAULT_SIGN_METHOD = "timeTableId";
+
+export const SIGN_METHOD_LABELS = Object.freeze({
+  timeTableId: "打卡机扫码",
+  courseSchedId: "课堂扫码"
+});
+
+/** @param {unknown} value @param {boolean} [strict] @returns {SignMethod} */
+export function normalizeSignMethod(value, strict = false) {
+  if (value === "timeTableId" || value === "courseSchedId") return value;
+  if (strict) throw new Error("签到方式无效，请选择打卡机扫码或课堂扫码");
+  return DEFAULT_SIGN_METHOD;
+}
+
+/** @param {unknown} value @returns {SignMethod | null} */
+export function parseSignMethodInput(value) {
+  if (typeof value !== "string") return null;
+  const clean = value.trim();
+  if (clean === "打卡机扫码" || clean === "timeTableId") return "timeTableId";
+  if (clean === "课堂扫码" || clean === "courseSchedId") return "courseSchedId";
+  return null;
+}
+
+/** @param {unknown} method @returns {string} */
+export function signMethodLabel(method) {
+  if (method === "courseSchedId") return SIGN_METHOD_LABELS.courseSchedId;
+  if (method === "timeTableId") return SIGN_METHOD_LABELS.timeTableId;
+  return SIGN_METHOD_LABELS[DEFAULT_SIGN_METHOD];
+}
+
 /** @param {unknown} value */
 export function normalizeCourseUuid(value) {
   if (typeof value !== "string") return null;
@@ -14,15 +50,16 @@ export function normalizeCourseSchedId(value) {
   return /^\d{7}$/.test(id) ? id : null;
 }
 
-/**
- * @typedef {{ name: "timeTableId" | "courseSchedId", value: string }} SignIdentifier
- */
-
-/** @param {unknown} uuid @param {unknown} courseSchedId @returns {SignIdentifier | null} */
-export function selectSignIdentifier(uuid, courseSchedId) {
+/** @param {unknown} uuid @param {unknown} courseSchedId @param {unknown} [preferredMethod] @returns {SignIdentifier | null} */
+export function selectSignIdentifier(uuid, courseSchedId, preferredMethod = DEFAULT_SIGN_METHOD) {
+  const method = normalizeSignMethod(preferredMethod);
   const timeTableId = normalizeCourseUuid(uuid);
-  if (timeTableId) return { name: "timeTableId", value: timeTableId };
   const numericId = normalizeCourseSchedId(courseSchedId);
+  if (method === "courseSchedId") {
+    if (numericId) return { name: "courseSchedId", value: numericId };
+    return timeTableId ? { name: "timeTableId", value: timeTableId } : null;
+  }
+  if (timeTableId) return { name: "timeTableId", value: timeTableId };
   return numericId ? { name: "courseSchedId", value: numericId } : null;
 }
 

@@ -95,8 +95,8 @@ export class UcasClient {
     return data.result;
   }
 
-  async sign({ uuid, courseSchedId }, timestamp) {
-    const identifier = selectSignIdentifier(uuid, courseSchedId);
+  async sign({ uuid, courseSchedId, method }, timestamp) {
+    const identifier = selectSignIdentifier(uuid, courseSchedId, method);
     if (!identifier) throw new Error("缺少有效的课程 UUID 或课程 ID");
     await this.ensureLogin();
     const data = await requestJson(this.fetchImpl, buildSignInUrl(identifier, timestamp, this.userId), {

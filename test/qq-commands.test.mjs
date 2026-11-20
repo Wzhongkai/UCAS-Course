@@ -37,6 +37,7 @@ function fixture() {
   const queued = [];
   const verificationCalls = [];
   const queryCalls = [];
+  const signCalls = [];
   const events = [
     { at: "2026-10-15T03:00:00.000Z", message: "account a event", accountId: "account-a" },
     { at: "2026-10-15T03:01:00.000Z", message: "account b private event", accountId: "account-b" },
@@ -137,6 +138,19 @@ function fixture() {
           if (input.timing === null) delete account.courseTimingOverrides[input.courseName];
           else account.courseTimingOverrides[input.courseName] = structuredClone(input.timing);
         }
+      } else if (input.action === "sign-method") {
+        const account = accounts.find((entry) => entry.id === input.accountId);
+        if (account) {
+          account.signMethod = input.signMethod;
+          if (input.resetCourseSignMethodOverrides) account.courseSignMethodOverrides = {};
+        }
+      } else if (input.action === "course-sign-method") {
+        const account = accounts.find((entry) => entry.id === input.accountId);
+        if (account) {
+          account.courseSignMethodOverrides ??= {};
+          if (input.signMethod === null) delete account.courseSignMethodOverrides[input.courseName];
+          else account.courseSignMethodOverrides[input.courseName] = input.signMethod;
+        }
       }
     },
     async readWorkerStatus() { counts.status += 1; return structuredClone(status); },
@@ -145,6 +159,11 @@ function fixture() {
       queryCalls.push({ accountId, date });
       if (automation.queryError) throw new Error("private query detail");
       return [{ id: "1234567", courseName: " 课程   甲 ", classBeginTime: "09:00:00", classEndTime: "10:00:00", teacherName: "教师甲" }];
+    },
+    async signNow(accountId, courseName, signMethod) {
+      signCalls.push({ accountId, courseName, signMethod });
+      if (automation.signNowResult) return automation.signNowResult;
+      return { status: "signed", courseName, signParameter: signMethod ?? "timeTableId", stuSignId: "SIGN-1" };
     }
   };
   const ucasClientFactory = ({ username, password }) => ({
@@ -156,7 +175,7 @@ function fixture() {
   const enrollment = createEnrollmentCoordinator({ directory: join(moduleTempDirectory, `enrollment-${fixtureSequence}`) });
   return {
     handler: createCommandHandler({ store, automation, ucasClientFactory, enrollment }),
-    accounts, bindings, codes, actions, queued, counts, store, automation, verificationCalls, queryCalls, admins, adminModes
+    accounts, bindings, codes, actions, queued, counts, store, automation, verificationCalls, queryCalls, signCalls, admins, adminModes
   };
 }
 
@@ -164,14 +183,14 @@ test("帮助介绍自助绑定；普通用户不能使用管理员绑定码流�
   const f = fixture();
   const userHelp = await f.handler({ userId: "qq-new", content: "帮助" });
   assert.match(userHelp, /绑定学号 学号 密码/u);
-  assert.equal(await f.handler({ userId: "qq-admin", content: "帮助" }), userHelp);
-  assert.equal(await f.handler({ userId: "qq-admin", content: "菜单" }), userHelp);
+  const adminHelp = await f.handler({ userId: "qq-admin", content: "管理员帮助" });
+  assert.match(adminHelp, /🛠️ 管理员目录/u);
+  assert.equal(await f.handler({ userId: "qq-admin", content: "帮助" }), adminHelp);
+  assert.equal(await f.handler({ userId: "qq-admin", content: "菜单" }), adminHelp);
+  assert.equal(await f.handler({ userId: "qq-admin", content: "管理菜单" }), adminHelp);
   assert.match(await f.handler({ userId: "qq-new", content: "我的ID" }), /qq-new/u);
   assert.equal(await f.handler({ userId: "qq-new", content: "管理菜单" }), "");
   assert.equal(await f.handler({ userId: "qq-new", content: "管理员帮助" }), "");
-  const adminHelp = await f.handler({ userId: "qq-admin", content: "管理员帮助" });
-  assert.match(adminHelp, /管理员帮助/u);
-  assert.equal(await f.handler({ userId: "qq-admin", content: "管理菜单" }), adminHelp);
   assert.match(await f.handler({ userId: "qq-new", content: "绑定 20260001" }), /仅管理员/u);
   assert.equal(f.bindings.has("account-a"), true);
   assert.equal(f.counts.publicSettings, 0);
@@ -314,11 +333,11 @@ test("课程查询可查看本人暂停账号并按上海时间输出，单课�
   const result = await f.handler({ userId: "qq-user-a", content: "查询课程 20260001 2026-10-15" });
   assert.match(result, /2026-10-15/u);
   assert.match(result, /2026-10-15 09:00–10:00/u);
-  assert.match(result, /课程：课程 甲\n教师：教师甲\n课程时间：2026-10-15 09:00–10:00/u);
+  assert.match(result, /① 课程 甲\n· 教师：教师甲\n· 时间：2026-10-15 09:00–10:00/u);
   assert.deepEqual(f.queryCalls, [{ accountId: "account-a", date: "20261015" }]);
 
   const dateOnly = await f.handler({ userId: "qq-user-a", content: "查询课程 20261015" });
-  assert.match(dateOnly, /课程：课程 甲/u);
+  assert.match(dateOnly, /① 课程 甲/u);
   assert.equal(f.queryCalls.at(-1).accountId, "account-a");
   assert.match(f.queryCalls.at(-1).date, /^\d{8}$/u);
 
@@ -346,7 +365,7 @@ test("普通用户无学号时只解析唯一有效绑定，三个课表别名�
 
   for (const command of ["查询课程", "查询课表", "课表"]) {
     const reply = await f.handler({ userId: "qq-user-a", content: command });
-    assert.match(reply, /课程：课程 甲/u);
+    assert.match(reply, /① 课程 甲/u);
     assert.equal(f.queryCalls.at(-1).accountId, "account-a");
     assert.equal(f.queryCalls.at(-1).date, today);
   }
@@ -369,7 +388,7 @@ test("普通用户无学号时只解析唯一有效绑定，三个课表别名�
     assert.match(await f.handler({ userId: "qq-user-a", content: command }), /多个有效绑定/u);
   }
   assert.equal(f.queryCalls.length, 3);
-  assert.match(await f.handler({ userId: "qq-user-a", content: "查询课表 20260001 2026-10-15" }), /课程：课程 甲/u);
+  assert.match(await f.handler({ userId: "qq-user-a", content: "查询课表 20260001 2026-10-15" }), /① 课程 甲/u);
 });
 
 test("普通用户单绑定可在设置命令中省略学号，管理员仍须显式指定", async () => {
@@ -442,8 +461,11 @@ test("管理员外模式按普通绑定权限运行，进入后裸账号命令�
   const f = fixture();
   f.adminModes.set("qq-admin", false);
   const userHelp = await f.handler({ userId: "qq-user-a", content: "帮助" });
-  assert.equal(await f.handler({ userId: "qq-admin", content: "帮助" }), userHelp);
-  assert.match(await f.handler({ userId: "qq-admin", content: "管理员帮助" }), /管理员帮助/u);
+  const adminPersonalHelp = await f.handler({ userId: "qq-admin", content: "帮助" });
+  assert.ok(adminPersonalHelp.startsWith(userHelp));
+  assert.match(adminPersonalHelp, /▸ 管理员入口\n  进入管理员模式 \/ 管理员帮助/u);
+  assert.doesNotMatch(userHelp, /管理员入口|进入管理员模式/u);
+  assert.match(await f.handler({ userId: "qq-admin", content: "管理员帮助" }), /🛠️ 管理员目录/u);
   assert.equal(await f.store.getAdminMode("qq-admin"), false);
   assert.match(await f.handler({ userId: "qq-admin", content: "关闭打卡 20260002" }), /没有权限|还没有绑定/u);
   assert.match(await f.handler({ userId: "qq-admin", content: "日志" }), /进入管理员模式/u);
@@ -671,5 +693,81 @@ test("真实 QQ store 的已验证绑定返回值与普通用户状态隔离兼�
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("签到方式支持全部统一与单课覆盖，管理员模式下必须指定学号", async () => {
+  const f = fixture();
+  const single = await f.handler({ userId: "qq-user-a", content: "签到方式 高等数学 课堂扫码" });
+  assert.match(single, /单课签到方式已更新/u);
+  assert.match(single, /课堂扫码/u);
+  assert.deepEqual(f.actions.at(-1), {
+    action: "course-sign-method", accountId: "account-a", courseName: "高等数学", signMethod: "courseSchedId"
+  });
+
+  const statusAfterSingle = await f.handler({ userId: "qq-user-a", content: "状态" });
+  assert.match(statusAfterSingle, /默认签到方式：打卡机扫码/u);
+  assert.match(statusAfterSingle, /单课方式覆盖：1 门/u);
+
+  const defaultOnly = await f.handler({ userId: "qq-user-a", content: "签到方式 课堂扫码" });
+  assert.match(defaultOnly, /默认签到方式已更新/u);
+  assert.deepEqual(f.actions.at(-1), {
+    action: "sign-method", accountId: "account-a", signMethod: "courseSchedId"
+  });
+  assert.equal(f.accounts[0].courseSignMethodOverrides["高等数学"], "courseSchedId");
+
+  const allReset = await f.handler({ userId: "qq-user-a", content: "签到方式 所有 打卡机扫码" });
+  assert.match(allReset, /所有课程已统一，旧单课方式设置已清除/u);
+  assert.deepEqual(f.actions.at(-1), {
+    action: "sign-method", accountId: "account-a", signMethod: "timeTableId", resetCourseSignMethodOverrides: true
+  });
+  assert.deepEqual(f.accounts[0].courseSignMethodOverrides, {});
+
+  await f.handler({ userId: "qq-user-a", content: "签到方式 课程甲 课堂扫码" });
+  const cleared = await f.handler({ userId: "qq-user-a", content: "清除单课方式 课程甲" });
+  assert.match(cleared, /单课签到方式已清除/u);
+  assert.deepEqual(f.actions.at(-1), {
+    action: "course-sign-method", accountId: "account-a", courseName: "课程甲", signMethod: null
+  });
+
+  const invalid = await f.handler({ userId: "qq-user-a", content: "签到方式 所有 未知方式" });
+  assert.match(invalid, /仅支持“打卡机扫码”或“课堂扫码”/u);
+
+  assert.match(await f.handler({ userId: "qq-admin", content: "签到方式 所有 课堂扫码" }), /明确提供学号/u);
+  const adminUpdate = await f.handler({ userId: "qq-admin", content: "签到方式 20260002 所有 课堂扫码" });
+  assert.match(adminUpdate, /默认签到方式已更新/u);
+  assert.deepEqual(f.actions.at(-1), {
+    action: "sign-method", accountId: "account-b", signMethod: "courseSchedId", resetCourseSignMethodOverrides: true
+  });
+});
+
+test("立即签到支持默认方式、指定方式与管理员代签", async () => {
+  const f = fixture();
+  const defaultSign = await f.handler({ userId: "qq-user-a", content: "立即签到 高等数学" });
+  assert.match(defaultSign, /✅ 立即签到成功/u);
+  assert.match(defaultSign, /· 方式：打卡机扫码/u);
+  assert.match(defaultSign, /不再重复自动签到/u);
+  assert.deepEqual(f.signCalls.at(-1), { accountId: "account-a", courseName: "高等数学", signMethod: undefined });
+
+  const classroomSign = await f.handler({ userId: "qq-user-a", content: "立即签到 高等数学 课堂扫码" });
+  assert.match(classroomSign, /✅ 立即签到成功/u);
+  assert.match(classroomSign, /· 方式：课堂扫码/u);
+  assert.deepEqual(f.signCalls.at(-1), { accountId: "account-a", courseName: "高等数学", signMethod: "courseSchedId" });
+
+  f.automation.signNowResult = { status: "already_signed", courseName: "高等数学" };
+  assert.match(await f.handler({ userId: "qq-user-a", content: "立即签到 高等数学" }), /课表显示已签到/u);
+
+  f.automation.signNowResult = { status: "not_found", courseName: "未知课程" };
+  assert.match(await f.handler({ userId: "qq-user-a", content: "立即签到 未知课程" }), /未找到今日课程/u);
+
+  f.automation.signNowResult = { status: "failed", courseName: "高等数学", signParameter: "courseSchedId", reason: "未到签到时间" };
+  const failedReply = await f.handler({ userId: "qq-user-a", content: "立即签到 高等数学 课堂扫码" });
+  assert.match(failedReply, /⚠️ 立即签到未成功/u);
+  assert.match(failedReply, /· 原因：未到签到时间/u);
+
+  f.automation.signNowResult = null;
+  assert.match(await f.handler({ userId: "qq-admin", content: "立即签到 高等数学" }), /明确提供学号/u);
+  const adminSign = await f.handler({ userId: "qq-admin", content: "立即签到 20260002 高等数学 课堂扫码" });
+  assert.match(adminSign, /✅ 立即签到成功/u);
+  assert.deepEqual(f.signCalls.at(-1), { accountId: "account-b", courseName: "高等数学", signMethod: "courseSchedId" });
 });
 

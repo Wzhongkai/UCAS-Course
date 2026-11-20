@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { filterCoursesByWhitelist, groupCourses, normalizeCourseName, parseCourseTime, resolveCourseTiming, scheduleOutcome, shanghaiDate, signTargetForAttempt, signWindow, timeAtSix } from "../src/schedule.mjs";
+import { effectiveSignMethodForGroup, filterCoursesByWhitelist, groupCourses, normalizeCourseName, parseCourseTime, resolveCourseSignMethod, resolveCourseTiming, scheduleOutcome, shanghaiDate, signTargetForAttempt, signTargetsForMethod, signWindow, timeAtSix } from "../src/schedule.mjs";
 
 const date = "20260914";
 const course = (id, start, end, name = "高等数学", teacher = "张老师") => ({
@@ -131,4 +131,25 @@ test("课程白名单按规范化后的完整课程名精确匹配", () => {
   assert.deepEqual(filterCoursesByWhitelist(courses, ["  机器学习 "]), [courses[1], courses[2]]);
   assert.deepEqual(filterCoursesByWhitelist(courses, ["数据库 原理"]), [courses[0], courses[1]]);
   assert.deepEqual(filterCoursesByWhitelist(courses, ["机器学习导论"]), [courses[0], courses[2]]);
+});
+
+test("按签到方式选择目标并支持单课覆盖与缺失回退", () => {
+  const base = course("1234567", "08:00:00", "09:40:00", "高等数学");
+  const withUuid = { ...base, id: "1234568", uuid: "00112233-4455-6677-8899-aabbccddeeff" };
+  const uuidOnly = { ...course("", "10:00:00", "11:40:00", "线性代数"), uuid: "00112233445566778899AABBCCDDEEFF" };
+  const [math, algebra] = groupCourses([base, withUuid, uuidOnly], date);
+
+  assert.equal(resolveCourseSignMethod("timeTableId", { "  高等  数学 ": "courseSchedId" }, "高等 数学"), "courseSchedId");
+  assert.equal(resolveCourseSignMethod("timeTableId", { "高等数学": "courseSchedId" }, "线性代数"), "timeTableId");
+  assert.equal(resolveCourseSignMethod("invalid", {}, "线性代数"), "timeTableId");
+
+  assert.deepEqual(signTargetsForMethod(math, "timeTableId").map((item) => item.uuid), ["00112233445566778899AABBCCDDEEFF"]);
+  assert.deepEqual(signTargetsForMethod(math, "courseSchedId").map((item) => item.legacyId), ["1234567", "1234568"]);
+  assert.equal(signTargetForAttempt(math, 1, "courseSchedId").legacyId, "1234567");
+  assert.equal(signTargetForAttempt(math, 2, "courseSchedId").legacyId, "1234568");
+  assert.equal(effectiveSignMethodForGroup(math, "courseSchedId"), "courseSchedId");
+  assert.equal(effectiveSignMethodForGroup(math, "timeTableId"), "timeTableId");
+
+  assert.deepEqual(signTargetsForMethod(algebra, "courseSchedId").map((item) => item.uuid), ["00112233445566778899AABBCCDDEEFF"]);
+  assert.equal(effectiveSignMethodForGroup(algebra, "courseSchedId"), "timeTableId");
 });

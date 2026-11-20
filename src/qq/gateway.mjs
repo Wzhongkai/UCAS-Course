@@ -138,7 +138,7 @@ export function createGateway({ api, store, inbox, handleCommand, send, WebSocke
       if (receipt.execute) {
         let reply;
         try { reply = await handleCommand({ userId, content: data.content }); }
-        catch { reply = "【暂时无法完成】\n\n请稍后重试，也可发送“状态”查看当前配置。"; }
+        catch { reply = "⚠️ 暂时无法完成\n\n请稍后重试，也可发送“状态”查看当前配置。"; }
         delivery = await inbox.complete(data.id, reply);
       }
       await deliver(delivery);

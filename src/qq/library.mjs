@@ -26,7 +26,7 @@ export function formatLibrarySeats({ counts, observedAt }) {
   return card("雁栖馆 · 余座查询", [
     ...AREAS.map(([area]) => [area, `${counts[area]} 席`]),
     ["查询时间", `${formatShanghaiTime(observedAt)}（北京时间）`]
-  ], { footer: "余座仅供参考，以图书馆预约小程序为准。" });
+  ], { icon: "📚", footer: "余座仅供参考，以图书馆预约小程序为准。" });
 }
 
 export function formatLibraryChange(previous, current, observedAt) {
@@ -34,7 +34,7 @@ export function formatLibraryChange(previous, current, observedAt) {
     ["区域", SELF_STUDY_AREA],
     ["余座", `${previous} 席 → ${current} 席`],
     ["检测时间", `${formatShanghaiTime(observedAt)}（北京时间）`]
-  ], { footer: "不再提醒可发送“关闭订阅”。" });
+  ], { icon: "🔔", footer: "不再提醒可发送“关闭订阅”。" });
 }
 
 export function createLibraryPoller({ store, query, signal, log = () => {} }) {

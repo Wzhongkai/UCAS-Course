@@ -61,6 +61,28 @@ test("没有有效 UUID 时才发数字场次 ID，签到失败不再用另一�
   assert.equal(signedUrls.length, 2);
 });
 
+test("指定课堂扫码时优先发 7 位课程号，缺 7 位编号时自动回退 UUID", async () => {
+  const signedUrls = [];
+  const client = new UcasClient({
+    username: "20260001", password: "secret",
+    fetchImpl: async (input) => {
+      const url = new URL(input);
+      if (url.pathname.endsWith("login.action")) return Response.json({ STATUS: "0", result: { id: "user-1", sessionId: "session-1" } });
+      signedUrls.push(url);
+      return Response.json({ STATUS: "0", result: { stuSignId: "2", stuSignStatus: "1" } });
+    }
+  });
+  const classroom = await client.sign({ uuid: "00112233445566778899AABBCCDDEEFF", courseSchedId: "1234567", method: "courseSchedId" }, 1789380000000);
+  assert.equal(classroom.signParameter, "courseSchedId");
+  assert.equal(signedUrls[0].searchParams.get("courseSchedId"), "1234567");
+  assert.equal(signedUrls[0].searchParams.has("timeTableId"), false);
+
+  const fallbackUuid = await client.sign({ uuid: "00112233445566778899AABBCCDDEEFF", courseSchedId: "", method: "courseSchedId" }, 1789380000000);
+  assert.equal(fallbackUuid.signParameter, "timeTableId");
+  assert.equal(signedUrls[1].searchParams.get("timeTableId"), "00112233445566778899AABBCCDDEEFF");
+  assert.equal(signedUrls[1].searchParams.has("courseSchedId"), false);
+});
+
 test("UCAS 课表状态 2 且没有结果时识别为当天无课", async () => {
   const responses = [
     { STATUS: "0", result: { id: "user-1", sessionId: "session-1" } },

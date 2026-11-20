@@ -2,7 +2,9 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { appUrl } from "../app-path";
+import { DEFAULT_SIGN_METHOD, signMethodLabel } from "../sign-url.mjs";
 
+type SignMethod = "timeTableId" | "courseSchedId";
 type SignTiming = {
   mode: "fixed" | "random";
   fixedMinutes: number;
@@ -11,12 +13,16 @@ type SignTiming = {
 };
 type Account = {
   id: string; username: string; usernameHint: string; enabled: boolean; timing: SignTiming;
-  courseTimingOverrides?: Record<string, SignTiming>; courseWhitelist: string[];
+  signMethod?: SignMethod;
+  courseTimingOverrides?: Record<string, SignTiming>;
+  courseSignMethodOverrides?: Record<string, SignMethod>;
+  courseWhitelist: string[];
 };
 type PlanItem = {
   key: string; courseName: string; teacherName: string; courseId: string; courseIds: string[];
   start: number; attemptAt: number; state: string;
   targetCount: number; attempts: number; message: string;
+  signMethod?: SignMethod; effectiveSignMethod?: SignMethod;
 };
 type AccountStatus = {
   id: string; enabled: boolean; date: string; lastScheduleAt: number | null;
@@ -41,7 +47,7 @@ type QqStatus = {
   message?: string;
 };
 type QqBindingCode = { code: string; expiresAt: string };
-type ServerDraftValues = { timing: SignTiming; whitelist: string };
+type ServerDraftValues = { timing: SignTiming; signMethod: SignMethod; whitelist: string };
 
 function qqRuntimeOnline(runtime: QqStatus["runtime"]) {
   if (!runtime) return false;
@@ -64,13 +70,13 @@ function sameTiming(left: SignTiming, right: SignTiming) {
 
 function timingError(timing: SignTiming) {
   if (timing.mode === "fixed") {
-    return Number.isInteger(timing.fixedMinutes) && timing.fixedMinutes >= 1 && timing.fixedMinutes <= 120
+    return Number.isInteger(timing.fixedMinutes) && timing.fixedMinutes >= 1 && timing.fixedMinutes <= 30
       ? ""
-      : "提前分钟数必须是 1 到 120 的整数";
+      : "提前分钟数必须是 1 到 30 的整数";
   }
   if (!Number.isInteger(timing.minMinutes) || !Number.isInteger(timing.maxMinutes)
-    || timing.minMinutes < 1 || timing.maxMinutes > 120) {
-    return "随机区间必须是 1 到 120 的整数分钟";
+    || timing.minMinutes < 1 || timing.maxMinutes > 30) {
+    return "随机区间必须是 1 到 30 的整数分钟";
   }
   if (timing.minMinutes > timing.maxMinutes) return "最多提前分钟数不能小于最少提前分钟数";
   return "";
@@ -100,9 +106,12 @@ export default function AutomationPanelMulti() {
   const [password, setPassword] = useState("");
   const [newPasswords, setNewPasswords] = useState<Record<string, string>>({});
   const [timingDrafts, setTimingDrafts] = useState<Record<string, SignTiming>>({});
+  const [signMethodDrafts, setSignMethodDrafts] = useState<Record<string, SignMethod>>({});
   const [whitelistDrafts, setWhitelistDrafts] = useState<Record<string, string>>({});
   const [courseNameDrafts, setCourseNameDrafts] = useState<Record<string, string>>({});
   const [courseTimingDrafts, setCourseTimingDrafts] = useState<Record<string, SignTiming>>({});
+  const [courseMethodNameDrafts, setCourseMethodNameDrafts] = useState<Record<string, string>>({});
+  const [courseMethodDrafts, setCourseMethodDrafts] = useState<Record<string, SignMethod>>({});
   const serverDraftValues = useRef<Record<string, ServerDraftValues>>({});
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [worker, setWorker] = useState<WorkerStatus | null>(null);
@@ -154,6 +163,7 @@ export default function AutomationPanelMulti() {
       const previousServerDrafts = serverDraftValues.current;
       const nextServerDrafts = Object.fromEntries(nextAccounts.map((account) => [account.id, {
         timing: { ...account.timing },
+        signMethod: account.signMethod ?? DEFAULT_SIGN_METHOD,
         whitelist: whitelistValue(account)
       }])) as Record<string, ServerDraftValues>;
       setAccounts(nextAccounts);
@@ -162,6 +172,12 @@ export default function AutomationPanelMulti() {
         const previousServer = previousServerDrafts[account.id]?.timing;
         return [account.id, !draft || !previousServer || sameTiming(draft, previousServer) ? { ...account.timing } : draft];
       })));
+      setSignMethodDrafts((current) => Object.fromEntries(nextAccounts.map((account) => {
+        const serverMethod = account.signMethod ?? DEFAULT_SIGN_METHOD;
+        const draft = current[account.id];
+        const previousServer = previousServerDrafts[account.id]?.signMethod;
+        return [account.id, !draft || !previousServer || draft === previousServer ? serverMethod : draft];
+      })));
       setWhitelistDrafts((current) => Object.fromEntries(nextAccounts.map((account) => {
         const draft = current[account.id];
         const previousServer = previousServerDrafts[account.id]?.whitelist;
@@ -169,6 +185,8 @@ export default function AutomationPanelMulti() {
       })));
       setCourseNameDrafts((current) => Object.fromEntries(nextAccounts.map((account) => [account.id, current[account.id] ?? ""])));
       setCourseTimingDrafts((current) => Object.fromEntries(nextAccounts.map((account) => [account.id, current[account.id] ?? { ...account.timing }])));
+      setCourseMethodNameDrafts((current) => Object.fromEntries(nextAccounts.map((account) => [account.id, current[account.id] ?? ""])));
+      setCourseMethodDrafts((current) => Object.fromEntries(nextAccounts.map((account) => [account.id, current[account.id] ?? (account.signMethod ?? DEFAULT_SIGN_METHOD)])));
       serverDraftValues.current = nextServerDrafts;
       setWorker(data.worker);
       setEvents(data.events ?? []);
@@ -296,6 +314,43 @@ export default function AutomationPanelMulti() {
     await mutate({ action: "course-timing", accountId: account.id, courseName, timing: null }, `${courseName} 已恢复默认签到时间。`);
   }
 
+  async function onSaveSignMethod(account: Account, resetCourseSignMethodOverrides = false) {
+    const signMethod = signMethodDrafts[account.id] ?? account.signMethod ?? DEFAULT_SIGN_METHOD;
+    const label = signMethodLabel(signMethod);
+    await mutate(
+      {
+        action: "sign-method",
+        accountId: account.id,
+        signMethod,
+        ...(resetCourseSignMethodOverrides ? { resetCourseSignMethodOverrides: true } : {})
+      },
+      resetCourseSignMethodOverrides
+        ? `${account.username} 的全部课程已统一为${label}（旧单课方式覆盖已清除）。`
+        : `${account.username} 的默认签到方式已更新为${label}。`
+    );
+  }
+
+  async function onSaveCourseSignMethod(account: Account) {
+    const courseName = (courseMethodNameDrafts[account.id] ?? "").normalize("NFKC").trim().replace(/\s+/gu, " ");
+    if (!courseName) {
+      setMessage("请填写完整课程名");
+      return;
+    }
+    const signMethod = courseMethodDrafts[account.id] ?? account.signMethod ?? DEFAULT_SIGN_METHOD;
+    const saved = await mutate(
+      { action: "course-sign-method", accountId: account.id, courseName, signMethod },
+      `${courseName} 的签到方式已设为${signMethodLabel(signMethod)}。`
+    );
+    if (saved) setCourseMethodNameDrafts((current) => ({ ...current, [account.id]: "" }));
+  }
+
+  async function onRestoreCourseSignMethod(account: Account, courseName: string) {
+    await mutate(
+      { action: "course-sign-method", accountId: account.id, courseName, signMethod: null },
+      `${courseName} 已恢复默认签到方式。`
+    );
+  }
+
   async function onSaveWhitelist(account: Account) {
     const courseWhitelist = (whitelistDrafts[account.id] ?? "").split(/\r?\n/u).map((item) => item.trim()).filter(Boolean);
     await mutate({ action: "whitelist", accountId: account.id, courseWhitelist }, `${account.username} 的课程白名单已保存，后台会重新获取课表。`);
@@ -405,7 +460,7 @@ export default function AutomationPanelMulti() {
               </label>
               {(timingDrafts[account.id] ?? account.timing).mode === "fixed" ? (
                 <label className="mt-3 block text-sm font-semibold">提前分钟数
-                  <input type="number" min="1" max="120" step="1"
+                  <input type="number" min="1" max="30" step="1"
                     value={(timingDrafts[account.id] ?? account.timing).fixedMinutes}
                     onChange={(event) => updateTiming(account, { fixedMinutes: Number(event.target.value) })}
                     className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5" />
@@ -413,13 +468,13 @@ export default function AutomationPanelMulti() {
               ) : (
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
                   <label className="block text-sm font-semibold">最少提前（分钟）
-                    <input type="number" min="1" max="120" step="1"
+                    <input type="number" min="1" max="30" step="1"
                       value={(timingDrafts[account.id] ?? account.timing).minMinutes}
                       onChange={(event) => updateTiming(account, { minMinutes: Number(event.target.value) })}
                       className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5" />
                   </label>
                   <label className="block text-sm font-semibold">最多提前（分钟）
-                    <input type="number" min="1" max="120" step="1"
+                    <input type="number" min="1" max="30" step="1"
                       value={(timingDrafts[account.id] ?? account.timing).maxMinutes}
                       onChange={(event) => updateTiming(account, { maxMinutes: Number(event.target.value) })}
                       className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5" />
@@ -448,7 +503,7 @@ export default function AutomationPanelMulti() {
               </label>
               {(courseTimingDrafts[account.id] ?? account.timing).mode === "fixed" ? (
                 <label className="mt-3 block text-sm font-semibold">提前分钟数
-                  <input type="number" min="1" max="120" step="1"
+                  <input type="number" min="1" max="30" step="1"
                     value={(courseTimingDrafts[account.id] ?? account.timing).fixedMinutes}
                     onChange={(event) => updateCourseTiming(account, { fixedMinutes: Number(event.target.value) })}
                     className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5" />
@@ -456,13 +511,13 @@ export default function AutomationPanelMulti() {
               ) : (
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
                   <label className="block text-sm font-semibold">最少提前（分钟）
-                    <input type="number" min="1" max="120" step="1"
+                    <input type="number" min="1" max="30" step="1"
                       value={(courseTimingDrafts[account.id] ?? account.timing).minMinutes}
                       onChange={(event) => updateCourseTiming(account, { minMinutes: Number(event.target.value) })}
                       className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5" />
                   </label>
                   <label className="block text-sm font-semibold">最多提前（分钟）
-                    <input type="number" min="1" max="120" step="1"
+                    <input type="number" min="1" max="30" step="1"
                       value={(courseTimingDrafts[account.id] ?? account.timing).maxMinutes}
                       onChange={(event) => updateCourseTiming(account, { maxMinutes: Number(event.target.value) })}
                       className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5" />
@@ -485,6 +540,64 @@ export default function AutomationPanelMulti() {
                           setCourseTimingDrafts((current) => ({ ...current, [account.id]: { ...timing } }));
                         }} className="action-btn action-btn--quiet min-h-10 rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-60">编辑</button>
                         <button type="button" disabled={saving} onClick={() => void onRestoreCourseTiming(account, courseName)}
+                          className="action-btn action-btn--quiet min-h-10 rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-60">恢复默认</button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="mt-5 rounded-xl border border-[color:var(--line)] bg-[color:var(--surface-raised)] p-4">
+              <h4 className="font-semibold">默认签到方式</h4>
+              <p className="mt-1 text-xs leading-5 text-[color:var(--muted)]">打卡机扫码使用 32 位 UUID，课堂扫码使用 7 位课程号；所选方式缺少对应编号时会自动回退到另一种方式。</p>
+              <label className="mt-3 block text-sm font-semibold">签到路径
+                <select value={signMethodDrafts[account.id] ?? account.signMethod ?? DEFAULT_SIGN_METHOD}
+                  onChange={(event) => setSignMethodDrafts((current) => ({ ...current, [account.id]: event.target.value as SignMethod }))}
+                  className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5">
+                  <option value="timeTableId">打卡机扫码（32位 UUID）</option>
+                  <option value="courseSchedId">课堂扫码（7位课程号）</option>
+                </select>
+              </label>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button type="button" disabled={saving} onClick={() => void onSaveSignMethod(account, false)}
+                  className="action-btn action-btn--quiet min-h-11 rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-60">保存默认方式</button>
+                <button type="button" disabled={saving} onClick={() => void onSaveSignMethod(account, true)}
+                  className="action-btn action-btn--quiet min-h-11 rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-60">应用到全部课程</button>
+              </div>
+            </div>
+            <div className="mt-5 rounded-xl border border-[color:var(--line)] bg-[color:var(--surface-raised)] p-4">
+              <h4 className="font-semibold">单课程签到方式</h4>
+              <p className="mt-1 text-xs leading-5 text-[color:var(--muted)]">填写完整课程名单独指定打卡机扫码或课堂扫码；该课程优先使用此设置，其余课程沿用默认方式。</p>
+              <label className="mt-3 block text-sm font-semibold">完整课程名
+                <input value={courseMethodNameDrafts[account.id] ?? ""}
+                  onChange={(event) => setCourseMethodNameDrafts((current) => ({ ...current, [account.id]: event.target.value }))}
+                  maxLength={120} placeholder="例如：高等数学" spellCheck={false}
+                  className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5" />
+              </label>
+              <label className="mt-3 block text-sm font-semibold">签到路径
+                <select value={courseMethodDrafts[account.id] ?? account.signMethod ?? DEFAULT_SIGN_METHOD}
+                  onChange={(event) => setCourseMethodDrafts((current) => ({ ...current, [account.id]: event.target.value as SignMethod }))}
+                  className="focus-ring input-surface mt-2 w-full rounded-xl border border-[color:var(--line)] px-4 py-2.5">
+                  <option value="timeTableId">打卡机扫码（32位 UUID）</option>
+                  <option value="courseSchedId">课堂扫码（7位课程号）</option>
+                </select>
+              </label>
+              <button type="button" disabled={saving || !(courseMethodNameDrafts[account.id] ?? "").trim()} onClick={() => void onSaveCourseSignMethod(account)}
+                className="action-btn action-btn--quiet mt-3 min-h-11 rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-60">保存单课方式</button>
+              {Object.entries(account.courseSignMethodOverrides ?? {}).length === 0 ? <p className="mt-3 text-xs text-[color:var(--muted)]">尚无单课方式覆盖。</p> : (
+                <ul className="mt-4 space-y-2" aria-label="单课程签到方式覆盖">
+                  {Object.entries(account.courseSignMethodOverrides ?? {}).sort(([left], [right]) => left.localeCompare(right, "zh-CN")).map(([courseName, method]) => (
+                    <li key={courseName} className="flex flex-wrap items-center justify-between gap-3 border-t border-[color:var(--line)] pt-3">
+                      <div>
+                        <p className="text-sm font-semibold">{courseName}</p>
+                        <p className="mt-1 text-xs text-[color:var(--muted)]">{signMethodLabel(method)}</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button type="button" disabled={saving} onClick={() => {
+                          setCourseMethodNameDrafts((current) => ({ ...current, [account.id]: courseName }));
+                          setCourseMethodDrafts((current) => ({ ...current, [account.id]: method }));
+                        }} className="action-btn action-btn--quiet min-h-10 rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-60">编辑</button>
+                        <button type="button" disabled={saving} onClick={() => void onRestoreCourseSignMethod(account, courseName)}
                           className="action-btn action-btn--quiet min-h-10 rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-60">恢复默认</button>
                       </div>
                     </li>
@@ -534,7 +647,10 @@ export default function AutomationPanelMulti() {
                     <div className="flex flex-wrap items-start justify-between gap-2"><h4 className="font-semibold">{item.courseName || "未命名课程"}</h4><span className="text-sm font-semibold text-[color:var(--green)]">{item.state}</span></div>
                     <p className="mt-2 text-xs leading-5 text-[color:var(--muted)]">{item.teacherName ? `${item.teacherName} · ` : ""}{formatTime(item.start)} 上课 · {formatTime(item.attemptAt)} 开始尝试</p>
                     <p className="mt-1 text-xs leading-5 text-[color:var(--muted)]">
-                      课程入口 {item.courseIds?.join(" / ") || item.courseId} · 已尝试 {item.attempts} 次
+                      方式：{signMethodLabel(item.signMethod)}
+                      {item.effectiveSignMethod && item.signMethod && item.effectiveSignMethod !== item.signMethod
+                        ? `（缺少对应编号，回退${signMethodLabel(item.effectiveSignMethod)}）`
+                        : ""} · 课程入口 {item.courseIds?.join(" / ") || item.courseId} · 已尝试 {item.attempts} 次
                     </p>
                     {item.targetCount > 1 ? <p className="mt-1 text-xs leading-5 text-[color:var(--muted)]">同一时间段有 {item.targetCount} 个入口，后台会依次轮换尝试，任一成功即停止。</p> : null}
                     {item.message ? <p className="mt-2 text-sm leading-5">{item.message}</p> : null}

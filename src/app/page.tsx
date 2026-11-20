@@ -4,7 +4,9 @@ import Image from "next/image";
 import { FormEvent, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import AutomationPanel from "./automation-panel-multi";
 import { appUrl } from "../app-path";
-import { buildSignInUrl, selectSignIdentifier } from "../sign-url.mjs";
+import { buildSignInUrl, DEFAULT_SIGN_METHOD, selectSignIdentifier, signMethodLabel } from "../sign-url.mjs";
+
+type SignMethod = "timeTableId" | "courseSchedId";
 
 type CourseItem = {
 	id: string;
@@ -120,6 +122,8 @@ export default function Home() {
 	const [manualIdentifier, setManualIdentifier] = useState("");
 	const [courses, setCourses] = useState<CourseItem[]>([]);
 	const [selectedCourseKey, setSelectedCourseKey] = useState("");
+	const [defaultQuerySignMethod, setDefaultQuerySignMethod] = useState<SignMethod>(DEFAULT_SIGN_METHOD);
+	const [courseSignMethods, setCourseSignMethods] = useState<Record<string, SignMethod>>({});
 	const [statusText, setStatusText] = useState("输入学号、密码和日期，开始查询课程");
 	const [statusKind, setStatusKind] = useState<StatusKind>("idle");
 	const [actionStatusText, setActionStatusText] = useState(ACTION_STATUS_DEFAULT_TEXT);
@@ -310,11 +314,14 @@ export default function Home() {
 	const hasKeyword = keyword.trim().length > 0;
 	const emptyHelpText = hasKeyword ? "可先清空筛选词，再查看全部课程" : "检查日期是否为上课日，并确认学号与密码正确";
 	const isCourseSelected = (course: CourseItem): boolean => selectedCourseKey === getCourseKey(course);
+	const getCourseSignMethod = (course: CourseItem): SignMethod =>
+		courseSignMethods[getCourseKey(course)] ?? defaultQuerySignMethod;
 
 	const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
 		setLoading(true);
 		setSelectedCourseKey("");
+		setCourseSignMethods({});
 		setSignUrl("");
 		setQrDataUrl("");
 		setExpireAt(0);
@@ -353,8 +360,9 @@ export default function Home() {
 		}
 	};
 
-	const onPick = async (course: CourseItem) => {
-		const identifier = selectSignIdentifier(course.uuid, course.id);
+	const onPick = async (course: CourseItem, preferredMethodOverride?: SignMethod) => {
+		const preferredMethod = preferredMethodOverride ?? getCourseSignMethod(course);
+		const identifier = selectSignIdentifier(course.uuid, course.id, preferredMethod);
 		if (!identifier) return;
 		resetGeneratedSignState();
 		setSelectedCourseKey(getCourseKey(course));
@@ -367,7 +375,10 @@ export default function Home() {
 			return;
 		}
 
-		updateActionStatus("success", "签到码已生成（5秒后自动刷新）");
+		const fallbackNote = identifier.name !== preferredMethod
+			? `（缺少对应编号，已自动回退${signMethodLabel(identifier.name)}）`
+			: "";
+		updateActionStatus("success", `已按${signMethodLabel(identifier.name)}生成签到码${fallbackNote}（5秒后自动刷新）`);
 
 		if (window.matchMedia("(max-width: 1023px)").matches) {
 			setQrRelayActive(true);
@@ -375,7 +386,23 @@ export default function Home() {
 			window.requestAnimationFrame(() => {
 				qrSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
 			});
-			updateActionStatus("info", "已生成签到码");
+			updateActionStatus("info", `已生成${signMethodLabel(identifier.name)}签到码${fallbackNote}`);
+		}
+	};
+
+	const onChangeAllQuerySignMethod = async (nextMethod: SignMethod) => {
+		setDefaultQuerySignMethod(nextMethod);
+		setCourseSignMethods({});
+		if (selectedCourse) {
+			await onPick(selectedCourse, nextMethod);
+		}
+	};
+
+	const onChangeCourseSignMethod = async (course: CourseItem, nextMethod: SignMethod) => {
+		const key = getCourseKey(course);
+		setCourseSignMethods((current) => ({ ...current, [key]: nextMethod }));
+		if (selectedCourseKey === key) {
+			await onPick(course, nextMethod);
 		}
 	};
 
@@ -505,7 +532,8 @@ export default function Home() {
 			return;
 		}
 
-		const identifier = selectSignIdentifier(selectedCourse?.uuid, selectedCourse?.id);
+		const preferredMethod = selectedCourse ? getCourseSignMethod(selectedCourse) : defaultQuerySignMethod;
+		const identifier = selectSignIdentifier(selectedCourse?.uuid, selectedCourse?.id, preferredMethod);
 		if (!identifier) {
 			updateActionStatus("error", "请先在查询课程模式选择课程并生成签到码");
 			return;
@@ -734,16 +762,30 @@ export default function Home() {
 							<div className="panel rounded-2xl p-5 sm:p-6">
 								<div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
 									<h2 className="font-[var(--font-serif)] text-2xl font-semibold">选择课程</h2>
-									{hasCourses ? (
-										<input
-											className="focus-ring input-surface min-h-11 w-full rounded-xl border border-[color:var(--line)] px-4 py-2 text-sm md:w-auto md:min-w-[230px]"
-											name="courseFilter"
-											aria-label="筛选课程"
-											value={keyword}
-											onChange={(e) => setKeyword(e.target.value)}
-											placeholder="输入课程名或教师姓名进行筛选"
-										/>
-									) : null}
+									<div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+										<label className="flex items-center gap-2 text-xs font-semibold text-[color:var(--muted)]">
+											<span className="shrink-0">全部方式</span>
+											<select
+												aria-label="全部课程签到方式"
+												value={defaultQuerySignMethod}
+												onChange={(e) => void onChangeAllQuerySignMethod(e.target.value as SignMethod)}
+												className="focus-ring input-surface min-h-11 rounded-xl border border-[color:var(--line)] px-3 py-2 text-xs font-semibold text-[color:var(--ink)]"
+											>
+												<option value="timeTableId">打卡机扫码（32位 UUID）</option>
+												<option value="courseSchedId">课堂扫码（7位课程号）</option>
+											</select>
+										</label>
+										{hasCourses ? (
+											<input
+												className="focus-ring input-surface min-h-11 w-full rounded-xl border border-[color:var(--line)] px-4 py-2 text-sm md:w-auto md:min-w-[230px]"
+												name="courseFilter"
+												aria-label="筛选课程"
+												value={keyword}
+												onChange={(e) => setKeyword(e.target.value)}
+												placeholder="输入课程名或教师姓名进行筛选"
+											/>
+										) : null}
+									</div>
 								</div>
 
 								<div className="mt-4 space-y-4">
@@ -760,7 +802,9 @@ export default function Home() {
 										) : (
 											filteredCourses.map((course) => {
 												const selected = isCourseSelected(course);
-												const canGenerate = Boolean(selectSignIdentifier(course.uuid, course.id));
+												const courseMethod = getCourseSignMethod(course);
+												const resolvedIdentifier = selectSignIdentifier(course.uuid, course.id, courseMethod);
+												const canGenerate = Boolean(resolvedIdentifier);
 												return (
 													<article
 														key={getCourseKey(course)}
@@ -798,6 +842,23 @@ export default function Home() {
 																	course.classEndTime
 																)}
 															</dd>
+															<dt className="font-medium">方式</dt>
+															<dd>
+																<select
+																	aria-label={`${course.courseName || "课程"}签到方式`}
+																	value={courseMethod}
+																	onChange={(e) => void onChangeCourseSignMethod(course, e.target.value as SignMethod)}
+																	className="focus-ring input-surface rounded-lg border border-[color:var(--line)] px-2 py-1 text-xs font-medium text-[color:var(--ink)]"
+																>
+																	<option value="timeTableId">打卡机扫码</option>
+																	<option value="courseSchedId">课堂扫码</option>
+																</select>
+																{resolvedIdentifier && resolvedIdentifier.name !== courseMethod ? (
+																	<span className="ml-2 text-[11px] text-[color:var(--muted)]">
+																		缺号，回退{signMethodLabel(resolvedIdentifier.name)}
+																	</span>
+																) : null}
+															</dd>
 														</dl>
 														<button
 															type="button"
@@ -821,6 +882,7 @@ export default function Home() {
 													<th className="px-3 py-3">课程</th>
 													<th className="px-3 py-3">教师</th>
 													<th className="px-3 py-3">时段</th>
+													<th className="px-3 py-3">签到方式</th>
 													<th className="px-3 py-3">状态</th>
 													<th className="px-3 py-3">操作</th>
 												</tr>
@@ -829,7 +891,7 @@ export default function Home() {
 												{filteredCourses.length === 0 ? (
 													<tr>
 														<td
-															colSpan={5}
+															colSpan={6}
 															className="px-3 py-8 text-center text-[color:var(--green)]"
 														>
 															<p>暂无课程数据</p>
@@ -843,7 +905,9 @@ export default function Home() {
 												) : (
 													filteredCourses.map((course) => {
 														const selected = isCourseSelected(course);
-														const canGenerate = Boolean(selectSignIdentifier(course.uuid, course.id));
+														const courseMethod = getCourseSignMethod(course);
+														const resolvedIdentifier = selectSignIdentifier(course.uuid, course.id, courseMethod);
+														const canGenerate = Boolean(resolvedIdentifier);
 														return (
 															<tr
 																key={getCourseKey(course)}
@@ -864,6 +928,22 @@ export default function Home() {
 																		course.classBeginTime,
 																		course.classEndTime
 																	)}
+																</td>
+																<td className="px-3 py-3">
+																	<select
+																		aria-label={`${course.courseName || "课程"}签到方式`}
+																		value={courseMethod}
+																		onChange={(e) => void onChangeCourseSignMethod(course, e.target.value as SignMethod)}
+																		className="focus-ring input-surface rounded-lg border border-[color:var(--line)] px-2.5 py-1.5 text-xs font-medium"
+																	>
+																		<option value="timeTableId">打卡机扫码</option>
+																		<option value="courseSchedId">课堂扫码</option>
+																	</select>
+																	{resolvedIdentifier && resolvedIdentifier.name !== courseMethod ? (
+																		<p className="mt-1 text-[11px] text-[color:var(--muted)]">
+																			缺号，回退{signMethodLabel(resolvedIdentifier.name)}
+																		</p>
+																	) : null}
 																</td>
 																<td className="px-3 py-3">
 																	<span
@@ -914,6 +994,11 @@ export default function Home() {
 												/>
 												<div className="space-y-3 text-sm numeric-tabular">
 													<p>
+														当前方式：
+														<span className="font-semibold">
+															{qrSource ? signMethodLabel(qrSource.identifier.name) : "--"}
+														</span>
+														{" · "}
 														刷新倒计时：
 														<span className="font-semibold">{expireCountdown}s</span>
 													</p>
@@ -974,7 +1059,7 @@ export default function Home() {
 								<div className="space-y-1">
 									<h2 className="font-[var(--font-serif)] text-2xl font-semibold">手动生成签到码</h2>
 									<p className="text-xs tracking-[0.08em] uppercase text-[color:var(--green)]">
-										优先输入 32 位 UUID（可带连字符），也可输入 7 位课程 ID
+										32 位 UUID 对应打卡机扫码（可带连字符），7 位课程号对应课堂扫码
 									</p>
 								</div>
 
@@ -1030,6 +1115,11 @@ export default function Home() {
 										/>
 										<div className="space-y-3 text-sm numeric-tabular">
 											<p>
+												当前方式：
+												<span className="font-semibold">
+													{qrSource ? signMethodLabel(qrSource.identifier.name) : "--"}
+												</span>
+												{" · "}
 												刷新倒计时：
 												<span className="font-semibold">{expireCountdown}s</span>
 											</p>

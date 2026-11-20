@@ -241,7 +241,11 @@ export async function POST(req: NextRequest) {
 		const bodyObject = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
 		const username = String(bodyObject.username ?? "").trim();
 		const password = String(bodyObject.password ?? "");
-		const identifier = selectSignIdentifier(bodyObject.timeTableId, bodyObject.courseSchedId ?? bodyObject.timeTableId);
+		const identifier = selectSignIdentifier(
+			bodyObject.timeTableId,
+			bodyObject.courseSchedId ?? bodyObject.timeTableId,
+			bodyObject.signMethod,
+		);
 		const clientTimestamp =
 			typeof bodyObject.timestamp === "number" && Number.isFinite(bodyObject.timestamp)
 				? bodyObject.timestamp

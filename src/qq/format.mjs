@@ -12,17 +12,18 @@ function displayLines(value) {
   return String(value).split(/\r\n?|\n/u).map(displayText).join("\n").trim();
 }
 
-export function card(title, fields = [], { footer } = {}) {
+export function card(title, fields = [], { footer, icon } = {}) {
   const heading = displayText(title) || "消息";
+  const badge = displayText(icon);
   const lines = (Array.isArray(fields) ? fields : []).flatMap((field) => {
     const [rawLabel, rawValue] = Array.isArray(field) ? field : [field?.label, field?.value];
     const label = displayText(rawLabel);
     const value = displayText(rawValue);
-    return label && value ? [`${label}：${value}`] : [];
+    return label && value ? [`· ${label}：${value}`] : [];
   });
   const note = displayLines(footer);
-  const body = [`【${heading}】`];
-  if (lines.length > 0) body.push("", ...lines);
+  const body = [badge ? `${badge} ${heading}` : `▸ ${heading}`];
+  if (lines.length > 0) body.push(...lines);
   if (note) body.push("", note);
   return body.join("\n");
 }
@@ -92,71 +93,79 @@ export function formatCourseCards(rows, { title = "课程", date } = {}) {
   return cards.join("\n\n");
 }
 
-const LIBRARY_HELP = ["【图书馆】", "查询图书馆座位", "订阅自助区", "启动订阅", "关闭订阅"];
+const LIBRARY_HELP = [
+  "▸ 图书馆余座（免绑定）",
+  "  查询图书馆座位",
+  "  订阅自助区 / 关闭订阅"
+];
 
 const USER_HELP = [
-  "【账号与课程】",
-  "帮助",
-  "绑定学号 学号 密码",
-  "查询课表",
+  "📖 使用指南",
+  "单课设置中的“课程名”填完整课程名，方括号内容可省略。",
   "",
-  "【打卡设置】",
-  "开启打卡",
-  "关闭打卡",
-  "启动打卡 高等数学",
-  "停止打卡 高等数学",
-  "签到时间 所有 固定 10",
-  "签到时间 所有 随机 5 10",
-  "签到时间 高等数学 固定 10",
-  "签到时间 高等数学 随机 5 10",
-  "停止打卡课程名单",
+  "▸ 账号与查询",
+  "  绑定学号 学号 密码",
+  "  查询课表 / 状态 / 解绑",
   "",
-  "【提醒与通知】",
-  "通知 全部",
-  "通知 仅失败",
-  "通知 关闭",
+  "▸ 打卡操作",
+  "  立即签到 课程名 [打卡机扫码|课堂扫码]",
+  "  开启打卡 / 关闭打卡",
+  "  启动打卡 课程名 / 停止打卡 课程名",
+  "  停止打卡课程名单",
+  "",
+  "▸ 签到时间（提前 1～30 分钟）",
+  "  签到时间 所有|课程名 固定 10",
+  "  签到时间 所有|课程名 随机 5 10",
+  "",
+  "▸ 签到方式",
+  "  签到方式 所有|课程名 打卡机扫码|课堂扫码",
+  "",
+  "▸ 消息通知",
+  "  通知 全部|仅失败|关闭",
   "",
   ...LIBRARY_HELP
-].join("\n");
-
-const ADMIN_MAIN_HELP = [
-  "【管理员 · 常用指令】",
-  "绑定学号 学号 密码",
-  "查询课表 20260001",
-  "开启打卡 20260001",
-  "关闭打卡 20260001",
-  "停止打卡 20260001 高等数学",
-  "启动打卡 20260001 高等数学",
-  "签到时间 20260001 所有 固定 10",
-  "签到时间 20260001 所有 随机 5 10",
-  "签到时间 20260001 高等数学 固定 10",
-  "签到时间 20260001 高等数学 随机 5 10",
-  "停止打卡课程名单 20260001",
-  "通知 20260001 全部",
-  "通知 20260001 仅失败",
-  "通知 20260001 关闭",
-  "管理员操作请先指定学号。"
 ].join("\n");
 
 const ADMIN_HELP = [
-  "【管理员帮助】",
-  "管理员默认以本人模式操作。",
-  "进入管理员模式",
-  "退出管理员模式",
-  "管理员模式下所有账号指令都必须带学号。",
-  "切换模式只改变可操作范围，不影响后台打卡。",
+  "🛠️ 管理员目录",
+  "管理员模式下所有账号指令均须指定学号，切换模式不影响后台打卡。",
   "",
-  ...ADMIN_MAIN_HELP.split("\n"),
+  "▸ 模式切换",
+  "  进入管理员模式 / 退出管理员模式",
   "",
-  "【账号管理】",
-  "添加学号 20260001 示例密码",
-  "删除学号 20260001",
-  "删除后按提示完成二次确认。",
+  "▸ 查看与诊断",
+  "  账号列表",
+  "  状态 学号 / 查询课表 学号 / 刷新课表 学号",
+  "  日志 / 日志 学号",
   "",
-  ...LIBRARY_HELP
+  "▸ 账号管理",
+  "  添加学号 学号 密码",
+  "  删除学号 学号（需二次确认）",
+  "  更新密码 学号 新密码",
+  "  绑定码 学号 / 解绑 学号（解绑该学号全部 QQ）",
+  "",
+  "▸ 打卡与方式代管",
+  "  立即签到 学号 课程名 [打卡机扫码|课堂扫码]",
+  "  开启打卡 学号 / 关闭打卡 学号",
+  "  启动打卡 学号 课程名 / 停止打卡 学号 课程名",
+  "  停止打卡课程名单 学号",
+  "  签到时间 学号 所有|课程名 固定 10",
+  "  签到时间 学号 所有|课程名 随机 5 10",
+  "  签到方式 学号 所有|课程名 打卡机扫码|课堂扫码",
+  "",
+  "▸ 全局通知（对该学号全部 QQ 生效）",
+  "  通知 学号 全部|仅失败|关闭",
+  "  测试通知 学号"
+].join("\n");
+
+const USER_HELP_FOR_ADMIN = [
+  USER_HELP,
+  "",
+  "▸ 管理员入口",
+  "  进入管理员模式 / 管理员帮助"
 ].join("\n");
 
 export function helpMessage(isAdmin = false, section = "main") {
   if (section === "admin") return isAdmin ? ADMIN_HELP : "";
-  return USER_HELP;
+  return isAdmin ? USER_HELP_FOR_ADMIN : USER_HELP;
 }

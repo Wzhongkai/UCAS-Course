@@ -37,7 +37,7 @@ test("未绑学号也能查询和开关订阅，重新开启不补发旧变化",
   const handle = createCommandHandler({ store, libraryQuery: async () => snapshot });
   const sendCommand = (content) => handle({ userId: "qq-reader", content });
   const reply = await sendCommand("查询图书馆座位");
-  assert.match(reply, /三层南区：12 席\n三层中厅自助学习区：0 席\n二层北区：7 席/u);
+  assert.match(reply, /· 三层南区：12 席\n· 三层中厅自助学习区：0 席\n· 二层北区：7 席/u);
   assert.match(reply, /2026-11-12 17:20/u);
   assert.match(await sendCommand("订阅自助区"), /订阅已开启/u);
   assert.equal(await open().hasLibrarySubscriptions(), true);

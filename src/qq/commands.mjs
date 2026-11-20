@@ -7,6 +7,7 @@ import {
 } from "../automation/store.mjs";
 import { UcasClient } from "../ucas.mjs";
 import { normalizeCourseName, shanghaiDate } from "../schedule.mjs";
+import { parseSignMethodInput, signMethodLabel } from "../sign-url.mjs";
 import {
   finishEnrollmentAttempt,
   reserveEnrollmentAttempt,
@@ -14,7 +15,7 @@ import {
 } from "./enrollment.mjs";
 import { card, helpMessage } from "./format.mjs";
 import { fetchLibrarySeats, formatLibrarySeats, LIBRARY_POLL_MS, SELF_STUDY_AREA } from "./library.mjs";
-import { createBackendScheduleQuery } from "./backend.mjs";
+import { createBackendScheduleQuery, createBackendSignAction } from "./backend.mjs";
 import { createCourseCards } from "./course-view.mjs";
 
 const MAX_INPUT_LENGTH = 16_384;
@@ -32,7 +33,8 @@ const DEFAULT_AUTOMATION = Object.freeze({
   readWorkerEvents,
   readWorkerStatus,
   updateAutomationSettings,
-  querySchedule: createBackendScheduleQuery()
+  querySchedule: createBackendScheduleQuery(),
+  signNow: createBackendSignAction()
 });
 
 function normalizeUserId(userId) {
@@ -156,6 +158,11 @@ function courseOverrideCount(account) {
   return overrides && typeof overrides === "object" && !Array.isArray(overrides) ? Object.keys(overrides).length : 0;
 }
 
+function courseSignMethodOverrideCount(account) {
+  const overrides = account?.courseSignMethodOverrides;
+  return overrides && typeof overrides === "object" && !Array.isArray(overrides) ? Object.keys(overrides).length : 0;
+}
+
 export function createCommandHandler({
   store,
   automation = DEFAULT_AUTOMATION,
@@ -250,7 +257,7 @@ export function createCommandHandler({
 
     if (trimmed === "查询图书馆座位") {
       try { return formatLibrarySeats(await libraryQuery()); }
-      catch { return card("图书馆余座暂时无法查询", [], { footer: "请稍后重试。" }); }
+      catch { return card("图书馆余座暂时无法查询", [], { icon: "⚠️", footer: "请稍后重试。" }); }
     }
     if (trimmed === "订阅自助区" || trimmed === "启动订阅") {
       let sample;
@@ -260,11 +267,11 @@ export function createCommandHandler({
       return card(created ? "自助区订阅已开启" : "自助区正在订阅", [
         ["区域", SELF_STUDY_AREA],
         ["当前余座", Number.isSafeInteger(count) ? `${count} 席` : "暂未获取"]
-      ], { footer: `每 ${LIBRARY_POLL_MS / 1_000} 秒检查一次，余座数变化时提醒。发送“关闭订阅”可停止。` });
+      ], { icon: "🔔", footer: `每 ${LIBRARY_POLL_MS / 1_000} 秒检查一次，余座数变化时提醒。发送“关闭订阅”可停止。` });
     }
     if (trimmed === "关闭订阅" || trimmed === "取消订阅自助区") {
       const removed = await call(store, "unsubscribeLibrarySeats", safeUserId);
-      return card(removed ? "自助区订阅已关闭" : "当前未开启自助区订阅", [], { footer: "发送“启动订阅”可开启提醒。" });
+      return card(removed ? "自助区订阅已关闭" : "当前未开启自助区订阅", [], { icon: "🔕", footer: "发送“订阅自助区”可重新开启提醒。" });
     }
 
     const role = await isAdmin(safeUserId);
@@ -274,7 +281,8 @@ export function createCommandHandler({
       const entered = await call(store, "setAdminMode", safeUserId, true);
       if (!entered) return "管理员模式开启失败，请稍后重试。";
       return card("管理员模式已开启", [{ label: "权限", value: "可管理所有账号" }], {
-        footer: "涉及账号的指令均须明确提供学号；发送“退出管理员模式”返回本人账号权限。"
+        icon: "🛠️",
+        footer: "涉及账号的指令均须明确提供学号；发送“帮助”查看管理员目录，发送“退出管理员模式”返回本人账号权限。"
       });
     }
     if (trimmed === "退出管理员模式") {
@@ -284,9 +292,9 @@ export function createCommandHandler({
       for (const key of pendingDeletes.keys()) {
         if (key.startsWith(prefix)) pendingDeletes.delete(key);
       }
-      return wasActive ? card("管理员模式已退出", [], { footer: "后续指令按本人账号权限处理。" }) : "当前未开启管理员模式。";
+      return wasActive ? card("管理员模式已退出", [], { icon: "✅", footer: "后续指令按本人账号权限处理。" }) : "当前未开启管理员模式。";
     }
-    if (trimmed === "帮助" || trimmed === "菜单") return helpMessage(false);
+    if (trimmed === "帮助" || trimmed === "菜单") return identity ? helpMessage(true, "admin") : helpMessage(role);
     if (trimmed === "管理员帮助" || trimmed === "管理菜单") return role ? helpMessage(true, "admin") : "";
     if (trimmed === "我的ID" || trimmed === "我的 ID") {
       return card("我的 QQ ID", [{ label: "QQ ID", value: safeUserId }], { footer: "可使用“绑定学号 学号 密码”自助绑定。" });
@@ -355,6 +363,7 @@ export function createCommandHandler({
           ];
           if (!created) fields.push({ label: "登录凭据", value: "已更新" });
           return card("绑定成功", fields, {
+            icon: "✅",
             footer: created ? "新账号默认暂停；需要时可自行开启打卡。" : "已保存验证通过的凭据，并保留账号原有开关状态。"
           });
         });
@@ -469,7 +478,9 @@ export function createCommandHandler({
         const fields = [
           { label: "打卡", value: account.enabled ? "已开启" : "已暂停" },
           { label: "默认签到时间", value: formatTiming(account.timing) },
-          { label: "单课时间覆盖", value: `${courseOverrideCount(account)} 门` }
+          { label: "单课时间覆盖", value: `${courseOverrideCount(account)} 门` },
+          { label: "默认签到方式", value: signMethodLabel(account.signMethod) },
+          { label: "单课方式覆盖", value: `${courseSignMethodOverrideCount(account)} 门` }
         ];
         if (!state) fields.push({ label: "后台状态", value: "尚未报告" });
         else {
@@ -478,7 +489,7 @@ export function createCommandHandler({
           if (state.lastError) fields.push({ label: "最近运行", value: "有错误" });
           if (status?.updatedAt) fields.push({ label: "状态更新时间", value: formatShanghai(status.updatedAt) });
         }
-        cards.push(card(accountLabel(account), fields));
+        cards.push(card(accountLabel(account), fields, { icon: "📋" }));
       }
       return boundCards(cards);
     }
@@ -527,6 +538,81 @@ export function createCommandHandler({
       return boundCards(cards, MAX_REPLY_LENGTH * 4);
     }
 
+    if (trimmed === "立即签到") {
+      return identity
+        ? "请提供学号和课程名，例如：立即签到 学号 高等数学 或 立即签到 学号 高等数学 课堂扫码"
+        : "请提供课程名，例如：立即签到 高等数学 或 立即签到 高等数学 课堂扫码";
+    }
+
+    if ((match = trimmed.match(/^立即签到\s+([\s\S]+)$/u))) {
+      let body = match[1].trim();
+      let explicitMethod;
+      const methodSuffix = body.match(/^([\s\S]+?)\s+(打卡机扫码|课堂扫码)$/u);
+      if (methodSuffix) {
+        body = methodSuffix[1].trim();
+        explicitMethod = parseSignMethodInput(methodSuffix[2]) ?? undefined;
+      }
+      const { username: requestedUsername, value: requestedCourseName } = await splitOptionalUsername(body);
+      const courseName = requestedCourseName.normalize("NFKC").trim().replace(/\s+/gu, " ");
+      if (requestedUsername !== undefined && !validUsername(requestedUsername)) return "学号格式无效。";
+      if (!courseName || courseName.length > MAX_COURSE_NAME_LENGTH) {
+        return `课程名不能为空，且不能超过 ${MAX_COURSE_NAME_LENGTH} 个字符。`;
+      }
+      const scope = await resolveSingleAccount(safeUserId, identity, requestedUsername);
+      if (scope.reason) return scopeError(scope.reason);
+      const account = scope.accounts[0];
+      const username = account.username;
+
+      let result;
+      try {
+        result = await call(automation, "signNow", accountIdOf(account), courseName, explicitMethod);
+      } catch {
+        return card("立即签到暂时失败", [
+          { label: "学号", value: username },
+          { label: "课程", value: courseName }
+        ], { icon: "⚠️", footer: "请稍后重试，或发送“查询课表”核对课程状态。" });
+      }
+
+      const displayCourse = safeText(result?.courseName, MAX_COURSE_NAME_LENGTH) || courseName;
+      if (result?.status === "signed") {
+        const fields = [
+          { label: "学号", value: username },
+          { label: "课程", value: displayCourse },
+          { label: "方式", value: signMethodLabel(result.signParameter) }
+        ];
+        if (result.stuSignId) fields.push({ label: "记录", value: safeText(result.stuSignId, 60) });
+        return card("立即签到成功", fields, {
+          icon: "✅",
+          footer: "已同步标记完成，今日计划中该课程不再重复自动签到。"
+        });
+      }
+      if (result?.status === "already_signed") {
+        return card("课表显示已签到", [
+          { label: "学号", value: username },
+          { label: "课程", value: displayCourse },
+          { label: "状态", value: "无需重复签到" }
+        ], {
+          icon: "✅",
+          footer: "今日计划中该课程将自动跳过。"
+        });
+      }
+      if (result?.status === "not_found") {
+        return card("未找到今日课程", [
+          { label: "学号", value: username },
+          { label: "课程", value: displayCourse }
+        ], {
+          icon: "⚠️",
+          footer: "请先发送“查询课表”核对今日完整课程名。"
+        });
+      }
+      return card("立即签到未成功", [
+        { label: "学号", value: username },
+        { label: "课程", value: displayCourse },
+        { label: "方式", value: signMethodLabel(result?.signParameter ?? explicitMethod ?? account.signMethod) },
+        { label: "原因", value: safeText(result?.reason, 120) || "上游未确认成功" }
+      ], { icon: "⚠️" });
+    }
+
     if ((match = trimmed.match(/^(开启打卡|关闭打卡)(?:\s+(\S+))?$/u))) {
       const enabled = match[1] === "开启打卡";
       const requestedUsername = match[2];
@@ -567,13 +653,13 @@ export function createCommandHandler({
       let timing;
       if (fixedTimingMatch) {
         const fixedMinutes = Number(timingMatch[2]);
-        if (!Number.isInteger(fixedMinutes) || fixedMinutes < 1 || fixedMinutes > 120) return "签到时间必须是 1 到 120 分钟的整数。";
+        if (!Number.isInteger(fixedMinutes) || fixedMinutes < 1 || fixedMinutes > 30) return "签到时间必须是 1 到 30 分钟的整数。";
         timing = { mode: "fixed", fixedMinutes };
       } else {
         const minMinutes = Number(timingMatch[2]);
         const maxMinutes = Number(timingMatch[3]);
-        if (!Number.isInteger(minMinutes) || !Number.isInteger(maxMinutes) || minMinutes < 1 || maxMinutes > 120 || minMinutes > maxMinutes) {
-          return "随机签到时间需满足 1 ≤ 最小分钟 ≤ 最大分钟 ≤ 120。";
+        if (!Number.isInteger(minMinutes) || !Number.isInteger(maxMinutes) || minMinutes < 1 || maxMinutes > 30 || minMinutes > maxMinutes) {
+          return "随机签到时间需满足 1 ≤ 最小分钟 ≤ 最大分钟 ≤ 30。";
         }
         timing = { mode: "random", minMinutes, maxMinutes };
       }
@@ -614,13 +700,13 @@ export function createCommandHandler({
       let timing;
       if (fixedCourseTiming) {
         const fixedMinutes = Number(timingMatch[2]);
-        if (!Number.isInteger(fixedMinutes) || fixedMinutes < 1 || fixedMinutes > 120) return "签到时间必须是 1 到 120 分钟的整数。";
+        if (!Number.isInteger(fixedMinutes) || fixedMinutes < 1 || fixedMinutes > 30) return "签到时间必须是 1 到 30 分钟的整数。";
         timing = { mode: "fixed", fixedMinutes };
       } else {
         const minMinutes = Number(timingMatch[2]);
         const maxMinutes = Number(timingMatch[3]);
-        if (!Number.isInteger(minMinutes) || !Number.isInteger(maxMinutes) || minMinutes < 1 || maxMinutes > 120 || minMinutes > maxMinutes) {
-          return "随机签到时间需满足 1 ≤ 最小分钟 ≤ 最大分钟 ≤ 120。";
+        if (!Number.isInteger(minMinutes) || !Number.isInteger(maxMinutes) || minMinutes < 1 || maxMinutes > 30 || minMinutes > maxMinutes) {
+          return "随机签到时间需满足 1 ≤ 最小分钟 ≤ 最大分钟 ≤ 30。";
         }
         timing = { mode: "random", minMinutes, maxMinutes };
       }
@@ -652,6 +738,66 @@ export function createCommandHandler({
         { label: "学号", value: username },
         { label: "课程", value: courseName }
       ], { footer: "后续使用默认签到时间。" });
+    }
+
+    const signMethodMatch = trimmed.match(/^签到方式(?:\s+([\s\S]+?))?\s+(打卡机扫码|课堂扫码)$/u);
+    if (signMethodMatch) {
+      const { username: requestedUsername, value: methodTarget } = await splitOptionalUsername(signMethodMatch[1] ?? "");
+      const courseName = methodTarget.normalize("NFKC").trim().replace(/\s+/gu, " ");
+      const signMethod = parseSignMethodInput(signMethodMatch[2]);
+      if (requestedUsername !== undefined && !validUsername(requestedUsername)) return "学号格式无效。";
+      if (!signMethod) return "签到方式仅支持“打卡机扫码”或“课堂扫码”。";
+      if (courseName && courseName !== "所有" && courseName.length > MAX_COURSE_NAME_LENGTH) {
+        return `课程名不能为空，且不能超过 ${MAX_COURSE_NAME_LENGTH} 个字符。`;
+      }
+      const scope = await resolveSingleAccount(safeUserId, identity, requestedUsername);
+      if (scope.reason) return scopeError(scope.reason);
+      const account = scope.accounts[0];
+      const username = account.username;
+      if (courseName && courseName !== "所有") {
+        await call(automation, "updateAutomationSettings", {
+          action: "course-sign-method", accountId: accountIdOf(account), courseName, signMethod
+        });
+        return card("单课签到方式已更新", [
+          { label: "学号", value: username },
+          { label: "课程", value: courseName },
+          { label: "签到方式", value: signMethodLabel(signMethod) }
+        ], { footer: "单课方式覆盖优先于默认方式；缺少对应编号时自动回退另一种方式。" });
+      }
+      const resetCourseSignMethodOverrides = courseName === "所有";
+      await call(automation, "updateAutomationSettings", {
+        action: "sign-method", accountId: accountIdOf(account), signMethod,
+        ...(resetCourseSignMethodOverrides ? { resetCourseSignMethodOverrides: true } : {})
+      });
+      return card("默认签到方式已更新", [
+        { label: "学号", value: username },
+        { label: "签到方式", value: signMethodLabel(signMethod) }
+      ], {
+        footer: resetCourseSignMethodOverrides
+          ? "所有课程已统一，旧单课方式设置已清除；缺少对应编号时自动回退另一种方式。"
+          : "单课方式覆盖优先于默认方式；缺少对应编号时自动回退另一种方式。"
+      });
+    }
+
+    if (/^签到方式(?:\s+[\s\S]*)?$/u.test(trimmed)) {
+      return "签到方式仅支持“打卡机扫码”或“课堂扫码”，例如：签到方式 所有 课堂扫码";
+    }
+
+    if ((match = trimmed.match(/^清除单课方式\s+([\s\S]+)$/u))) {
+      const { username: requestedUsername, value: requestedCourseName } = await splitOptionalUsername(match[1]);
+      const courseName = requestedCourseName.normalize("NFKC").trim().replace(/\s+/gu, " ");
+      if (requestedUsername !== undefined && !validUsername(requestedUsername)) return "学号格式无效。";
+      if (!courseName || courseName.length > MAX_COURSE_NAME_LENGTH) return `课程名不能为空，且不能超过 ${MAX_COURSE_NAME_LENGTH} 个字符。`;
+      const scope = await resolveSingleAccount(safeUserId, identity, requestedUsername);
+      if (scope.reason) return scopeError(scope.reason);
+      const username = scope.accounts[0].username;
+      await call(automation, "updateAutomationSettings", {
+        action: "course-sign-method", accountId: accountIdOf(scope.accounts[0]), courseName, signMethod: null
+      });
+      return card("单课签到方式已清除", [
+        { label: "学号", value: username },
+        { label: "课程", value: courseName }
+      ], { footer: "后续使用默认签到方式。" });
     }
 
     if ((match = trimmed.match(/^(停止打卡|启动打卡)\s+([\s\S]+)$/u))) {
@@ -790,7 +936,7 @@ export function createCommandHandler({
         return `${card("删除账号二次确认", [
           { label: "学号", value: username },
           { label: "有效期", value: "5 分钟" }
-        ], { footer: "请复制并发送以下指令：" })}\n\n${commandName} ${username} 确认 ${token}`;
+        ], { icon: "⚠️", footer: "请复制并发送以下指令：" })}\n\n${commandName} ${username} 确认 ${token}`;
       }
       const pending = pendingDeletes.get(key);
       if (!pending || pending.expiresAt < Date.now() || !safeTokenEqual(match[3], pending.token)) {
