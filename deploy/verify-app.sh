@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-env_file="/etc/ucas-course.env"
-base_url="http://127.0.0.1:3110/course"
+env_file="${ENV_FILE:-/etc/ucas-course.env}"
+app_host="${APP_HOST:-127.0.0.1}"
+app_port="${APP_PORT:-3110}"
+app_base_path="${APP_BASE_PATH:-/course}"
+service_name="${SERVICE_NAME:-ucas-course.service}"
+origin="http://${app_host}:${app_port}"
+base_url="${APP_BASE_URL:-${origin}${app_base_path}}"
 
 set -a
 source "$env_file"
@@ -19,7 +24,7 @@ payload="$(node -e 'process.stdout.write(JSON.stringify({ key: process.env.UCAS_
 login_code="$(curl -sS -o /dev/null -w '%{http_code}' \
   -c "$cookie_file" \
   -H 'Content-Type: application/json' \
-  -H 'Origin: http://127.0.0.1:3110' \
+  -H "Origin: $origin" \
   --data-binary "$payload" \
   "$base_url/api/access")"
 [[ "$login_code" == "200" ]]
@@ -27,8 +32,8 @@ login_code="$(curl -sS -o /dev/null -w '%{http_code}' \
 home_code="$(curl -sS -o "$response_file" -w '%{http_code}' -b "$cookie_file" "$base_url")"
 [[ "$home_code" == "200" ]]
 grep -q 'UCAS Course' "$response_file"
-systemctl is-active --quiet ucas-course.service
-systemctl is-enabled --quiet ucas-course.service
+systemctl is-active --quiet "$service_name"
+systemctl is-enabled --quiet "$service_name"
 
 printf 'access_redirect=%s login=%s home=%s service=running reboot=enabled\n' \
   "$redirect_code" "$login_code" "$home_code"

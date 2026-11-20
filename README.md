@@ -49,7 +49,7 @@ UCAS 课程查询、签到二维码和自动签到管理工具。项目提供一
 ## 本地运行
 
 ```bash
-git clone https://github.com/<your-account>/UCAS-Course.git
+git clone https://github.com/Wzhongkai/UCAS-Course.git
 cd UCAS-Course
 npm ci
 cp .env.local.example .env.local
@@ -199,6 +199,10 @@ npm run build
 
 自动化测试使用模拟响应，不会真实登录 UCAS 或发起签到。项目实际发送的 UCAS 请求、内部 API 以及二维码链接格式见 [API-and-QR.md](API-and-QR.md)。
 
-## 许可证
+## 致谢与许可证
 
-本项目使用 [GNU Affero General Public License v3.0](LICENSE)。
+本项目基于开源项目 [lccipher/UCAS-Course-Sign-in](https://github.com/lccipher/UCAS-Course-Sign-in)（AGPL-3.0）进行二次开发，感谢原作者提供的基础课程查询与签到链路实现。
+
+2026 年起在本仓库中新增和修改的主要内容包括：多账号加密自动签到后台与文件锁存储、签到方式手动切换（打卡机扫码 / 课堂扫码，支持全局与单课）、QQ 官方机器人私聊控制（含多 QQ 绑定、管理员模式、`立即签到`、雁栖馆余座查询与订阅）、全站访问密钥保护及跨平台免安装便携包构建。
+
+依据原项目许可证条款，本项目继续使用 [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE) 开源。若你修改本项目并将其部署为网络服务（包括网页或机器人服务）供他人使用，请遵循 AGPL-3.0 协议保留原有版权与修改说明，并同步公开修改后的完整源代码。
