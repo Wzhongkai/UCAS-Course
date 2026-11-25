@@ -20,6 +20,7 @@ const TERMINAL_HISTORY_LIMIT = 1_000;
 const NOTIFICATION_ID_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 const MAX_NOTIFICATION_IDS = 50_000;
 const MAX_PENDING_NOTIFICATIONS = 1_000;
+const activeSenderTokens = new Set();
 export const LIBRARY_NOTIFICATION = "library_seats";
 // Older releases can safely skip these queue entries during rollback.
 const LIBRARY_QUEUE_ACCOUNT = "library-self-study";
@@ -581,20 +582,24 @@ export function createQqStore({
     if (typeof accountExists !== "function") throw new TypeError("accountExists 必须是函数");
     const counts = { sent: 0, failed: 0, skipped: 0, retried: 0, pending: 0 };
     const senderToken = randomBytes(16).toString("hex");
-    const acquired = await transact((state) => {
-      const lease = state.senderLease;
-      // Never steal from a live process, even if a send has exceeded its
-      // nominal lease. A dead process is recoverable as soon as its pid exits.
-      if (lease && processIsAlive(lease.pid)) return false;
-      state.senderLease = { token: senderToken, pid: process.pid, expiresAt: Date.now() + SENDER_LEASE_MS };
-      return true;
-    });
-    if (!acquired) {
-      counts.pending = await read((state) => state.notifications.filter((item) => ["pending", "sending"].includes(item.status)).length);
-      return counts;
-    }
-
+    let acquired = false;
+    activeSenderTokens.add(senderToken);
     try {
+      acquired = await transact((state) => {
+        const lease = state.senderLease;
+        // A previous drain in this process may have exited without persisting
+        // its release. Only the in-memory token can prove it is still running.
+        if (lease && (lease.pid === process.pid
+          ? activeSenderTokens.has(lease.token)
+          : processIsAlive(lease.pid))) return false;
+        state.senderLease = { token: senderToken, pid: process.pid, expiresAt: Date.now() + SENDER_LEASE_MS };
+        return true;
+      });
+      if (!acquired) {
+        counts.pending = await read((state) => state.notifications.filter((item) => ["pending", "sending"].includes(item.status)).length);
+        return counts;
+      }
+
       while (!signal?.aborted) {
         const reservation = await transact((state) => {
           const lease = state.senderLease;
@@ -662,6 +667,7 @@ export function createQqStore({
           continue;
         }
 
+        let deliveryError = null;
         try {
           // Network I/O deliberately happens after all file-lock transactions
           // have ended. Delivery is at-least-once across process crashes.
@@ -670,17 +676,21 @@ export function createQqStore({
             ...(reservedItem.kind === LIBRARY_NOTIFICATION ? { subscriptionId: reservedItem.subscriptionId } : {}),
             ...(reservedItem.expiresAt === undefined ? {} : { expiresAt: reservedItem.expiresAt })
           });
-          const result = await finishAttempt(reservedItem.id, reservedItem.attemptToken);
-          if (result) counts[result] += 1;
         } catch (error) {
-          const result = await finishAttempt(reservedItem.id, reservedItem.attemptToken, error);
-          if (result) counts[result] += 1;
+          deliveryError = error;
         }
+        // A storage error after QQ accepted a message is not a send failure.
+        const result = await finishAttempt(reservedItem.id, reservedItem.attemptToken, deliveryError);
+        if (result) counts[result] += 1;
       }
     } finally {
-      await transact((state) => {
-        if (state.senderLease?.token === senderToken) state.senderLease = null;
-      });
+      try {
+        if (acquired) await transact((state) => {
+          if (state.senderLease?.token === senderToken) state.senderLease = null;
+        });
+      } finally {
+        activeSenderTokens.delete(senderToken);
+      }
     }
     counts.pending = await read((state) => state.notifications.filter((item) => ["pending", "sending"].includes(item.status)).length);
     return counts;

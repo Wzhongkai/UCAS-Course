@@ -56,7 +56,10 @@ if (process.env.QQ_BOT_ENABLED !== "1" || !process.env.QQ_BOT_APP_ID || !process
             }
           })
         });
-      } catch { log("通知队列处理失败，稍后重试"); }
+      } catch (error) {
+        const code = /^[A-Z][A-Z0-9_]{1,31}$/.test(error?.code ?? "") ? `（${error.code}）` : "";
+        log(`通知队列处理失败${code}，稍后重试`);
+      }
       finally { draining = false; }
     };
     const timer = setInterval(() => { if (!draining && !stopped) drainTask = drain(); }, 3000);

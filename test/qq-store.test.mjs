@@ -5,6 +5,32 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createQqStore } from "../src/qq/store.mjs";
 
+test("发送轮次结束后遗留的本进程租约立即恢复，活跃租约仍防止重复发送", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "ucas-qq-orphan-lease-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const open = () => createQqStore({ directory, appId: "orphan-lease", adminOpenids: [] });
+  const store = open();
+  await store.bindVerified("user", "account");
+  const notification = (id) => ({ id, accountId: "account", kind: "success", content: id });
+  await store.enqueueNotification(notification("already-sent"));
+  await store.drainNotifications({ send: async () => {} });
+  await store.enqueueNotification(notification("next-message"));
+  const file = join(directory, "qq-orphan-lease.json");
+  const state = JSON.parse(await readFile(file, "utf8"));
+  state.senderLease = { token: "ended-drain", pid: process.pid, expiresAt: Date.now() + 300_000 };
+  await writeFile(file, JSON.stringify(state));
+
+  const delivered = [];
+  const result = await store.drainNotifications({ send: async (_user, content) => {
+    const competingDrain = await open().drainNotifications({ send: async () => assert.fail("live lease was taken") });
+    assert.equal(competingDrain.pending, 1);
+    delivered.push(content);
+  } });
+  assert.equal(result.sent, 1);
+  assert.deepEqual(delivered, ["next-message"]);
+  assert.equal(JSON.parse(await readFile(file, "utf8")).senderLease, null);
+});
+
 test("过期的即将签到提醒不会在恢复网络后迟发", async () => {
   const directory = await mkdtemp(join(tmpdir(), "ucas-qq-expiry-"));
   const store = createQqStore({ directory, appId: "expiry", adminOpenids: [] });
