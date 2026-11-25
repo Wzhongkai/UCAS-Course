@@ -4,6 +4,7 @@ import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const removeLockOptions = { recursive: true, force: true, maxRetries: 5, retryDelay: 25 };
 
 function isProcessAlive(pid) {
   if (!Number.isSafeInteger(pid) || pid < 1) return false;
@@ -119,12 +120,16 @@ export async function withFileLock(file, callback, { timeoutMs = 10_000 } = {}) 
       await writeFile(join(lockDirectory, "owner.json"), JSON.stringify(owner), { encoding: "utf8", mode: 0o600 });
     } catch (error) {
       if (acquired) {
-        await rm(lockDirectory, { recursive: true, force: true }).catch(() => {});
+        await rm(lockDirectory, removeLockOptions).catch(() => {});
         throw error;
       }
-      if (error?.code !== "EEXIST") throw error;
-
-      if (await removeDeadLock(lockDirectory)) continue;
+      if (error?.code === "EEXIST") {
+        if (await removeDeadLock(lockDirectory)) continue;
+      } else {
+        // Concurrent directory removal can briefly surface as access denied on Windows.
+        const transientWindowsError = process.platform === "win32" && ["EACCES", "EBUSY", "EPERM"].includes(error?.code);
+        if (!transientWindowsError || Date.now() >= deadline) throw error;
+      }
       if (Date.now() >= deadline) {
         const timeoutError = new Error(`等待文件锁超时：${file}`);
         timeoutError.code = "ELOCKTIMEOUT";
@@ -139,7 +144,7 @@ export async function withFileLock(file, callback, { timeoutMs = 10_000 } = {}) 
     } finally {
       const current = await readOwner(lockDirectory);
       if (current?.pid === owner.pid && current.token === owner.token) {
-        await rm(lockDirectory, { recursive: true, force: true });
+        await rm(lockDirectory, removeLockOptions);
       }
     }
   }

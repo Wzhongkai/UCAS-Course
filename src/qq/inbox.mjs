@@ -1,8 +1,9 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { dataDirectory } from "../automation/store.mjs";
 import { withFileLock } from "../automation/file-lock.mjs";
+import { writeJsonAtomically } from "../automation/atomic-json.mjs";
 
 const RECEIPT_RETENTION_MS = 24 * 60 * 60 * 1000;
 const REPLY_TTL_MS = 5 * 60 * 1000;
@@ -67,18 +68,6 @@ async function readState(file) {
     return state;
   } catch (error) {
     if (error?.code === "ENOENT") return emptyState();
-    throw error;
-  }
-}
-
-async function writeState(file, state) {
-  await mkdir(dirname(file), { recursive: true });
-  const tempFile = `${file}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
-  try {
-    await writeFile(tempFile, JSON.stringify(state, null, 2), { encoding: "utf8", mode: 0o600, flag: "wx" });
-    await rename(tempFile, file);
-  } catch (error) {
-    await rm(tempFile, { force: true }).catch(() => {});
     throw error;
   }
 }
@@ -157,7 +146,7 @@ export function createInbox({
   const transact = (callback) => withFileLock(file, async () => {
     const state = await readState(file);
     const result = await callback(state);
-    await writeState(file, state);
+    await writeJsonAtomically(file, state);
     return result;
   });
 

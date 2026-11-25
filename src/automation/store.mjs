@@ -1,9 +1,10 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { normalizeCourseName, normalizeCourseWhitelist } from "../schedule.mjs";
 import { DEFAULT_SIGN_METHOD, normalizeSignMethod } from "../sign-url.mjs";
 import { withFileLock } from "./file-lock.mjs";
+import { writeJsonAtomically } from "./atomic-json.mjs";
 
 // Runtime-only persistent storage; it must not be bundled into Next's server output.
 export const dataDirectory = resolve(/*turbopackIgnore: true*/ process.env.AUTO_SIGN_DATA_DIR || "data");
@@ -63,13 +64,6 @@ async function readJson(file, fallback) {
     if (error?.code === "ENOENT") return fallback;
     throw error;
   }
-}
-
-async function writeJson(file, value) {
-  await mkdir(dataDirectory, { recursive: true });
-  const temp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-  await writeFile(temp, JSON.stringify(value, null, 2), { encoding: "utf8", mode: 0o600 });
-  await rename(temp, file);
 }
 
 export async function readAutomationSettings() {
@@ -318,7 +312,7 @@ async function mutateAutomationSettings({
   }
 
   const next = { version: 3, accounts, updatedAt: now };
-  await writeJson(settingsFile, next);
+  await writeJsonAtomically(settingsFile, next);
   return next;
 }
 
@@ -348,7 +342,7 @@ export async function readWorkerStatus() {
 }
 
 export async function writeWorkerStatus(status) {
-  await writeJson(statusFile, status);
+  await writeJsonAtomically(statusFile, status);
 }
 
 export async function readWorkerEvents() {
@@ -357,7 +351,7 @@ export async function readWorkerEvents() {
 }
 
 export async function writeWorkerEvents(events) {
-  await writeJson(eventsFile, events.slice(-100));
+  await writeJsonAtomically(eventsFile, events.slice(-100));
 }
 
 export function completionKeyFor(accountId, groupKey) {
@@ -387,7 +381,7 @@ export async function recordCompletedKeys(keys, cutoffDate = "") {
   return withFileLock(completedFile, async () => {
     const existing = await readCompletedKeys();
     const merged = pruneCompletedKeys([...existing, ...additions], cutoffDate);
-    await writeJson(completedFile, { completed: merged });
+    await writeJsonAtomically(completedFile, { completed: merged });
     return merged;
   });
 }

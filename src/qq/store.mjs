@@ -1,8 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { dataDirectory } from "../automation/store.mjs";
 import { withFileLock } from "../automation/file-lock.mjs";
+import { writeJsonAtomically } from "../automation/atomic-json.mjs";
 import { formatLibraryChange, validSeatCount } from "./library.mjs";
 
 const MODES = new Set(["all", "failure", "off"]);
@@ -143,18 +144,6 @@ async function readState(file) {
   };
 }
 
-async function writeState(file, state) {
-  await mkdir(dirname(file), { recursive: true });
-  const tempFile = `${file}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
-  try {
-    await writeFile(tempFile, JSON.stringify(state, null, 2), { encoding: "utf8", mode: 0o600, flag: "wx" });
-    await rename(tempFile, file);
-  } catch (error) {
-    await rm(tempFile, { force: true }).catch(() => {});
-    throw error;
-  }
-}
-
 function processIsAlive(pid) {
   if (!Number.isSafeInteger(pid) || pid < 1) return false;
   try {
@@ -217,7 +206,7 @@ export function createQqStore({
   const transact = (callback) => withFileLock(file, async () => {
     const state = await readState(file);
     const result = await callback(state);
-    await writeState(file, state);
+    await writeJsonAtomically(file, state);
     return result;
   });
 

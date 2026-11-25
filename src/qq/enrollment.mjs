@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { dataDirectory } from "../automation/store.mjs";
 import { withFileLock } from "../automation/file-lock.mjs";
+import { writeJsonAtomically } from "../automation/atomic-json.mjs";
 
 const WINDOW_MS = 15 * 60_000;
 const MAX_USER_FAILURES = 3;
@@ -31,13 +32,6 @@ async function readState(stateFile) {
   }
 }
 
-async function writeState(directory, stateFile, state) {
-  await mkdir(directory, { recursive: true });
-  const temp = `${stateFile}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(temp, JSON.stringify(state), { encoding: "utf8", mode: 0o600 });
-  await rename(temp, stateFile);
-}
-
 function prune(state, now) {
   const cutoff = now - WINDOW_MS;
   state.globalFailures = state.globalFailures.filter((at) => Number.isFinite(at) && at > cutoff);
@@ -63,7 +57,7 @@ export function createEnrollmentCoordinator({ directory = dataDirectory, clock =
       const now = clock();
       prune(state, now);
       const result = await callback(state, now);
-      await writeState(directory, stateFile, state);
+      await writeJsonAtomically(stateFile, state, { space: 0 });
       return result;
     });
   }
