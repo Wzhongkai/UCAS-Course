@@ -577,9 +577,10 @@ export function createQqStore({
     });
   }
 
-  async function drainNotifications({ send, accountExists = async () => true, signal } = {}) {
+  async function drainNotifications({ send, accountExists = async () => true, signal, concurrency = 1 } = {}) {
     if (typeof send !== "function") throw new TypeError("send 必须是函数");
     if (typeof accountExists !== "function") throw new TypeError("accountExists 必须是函数");
+    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 16) throw new RangeError("通知并发数无效");
     const counts = { sent: 0, failed: 0, skipped: 0, retried: 0, pending: 0 };
     const senderToken = randomBytes(16).toString("hex");
     let acquired = false;
@@ -600,7 +601,8 @@ export function createQqStore({
         return counts;
       }
 
-      while (!signal?.aborted) {
+      const busyUsers = new Set();
+      async function reserveNext() {
         const reservation = await transact((state) => {
           const lease = state.senderLease;
           if (!lease || lease.token !== senderToken) return null;
@@ -608,7 +610,7 @@ export function createQqStore({
           lease.expiresAt = now + SENDER_LEASE_MS;
           let exhausted = 0;
           for (const queued of state.notifications) {
-            const expiredSend = queued.status === "sending"
+            const expiredSend = queued.status === "sending" && !busyUsers.has(queued.userId)
               && (!Number.isFinite(queued.leaseUntil) || queued.leaseUntil <= now || !processIsAlive(queued.leasePid));
             const exhaustedPending = queued.status === "pending" && queued.attempts >= MAX_SEND_ATTEMPTS;
             if ((expiredSend || exhaustedPending) && queued.attempts >= MAX_SEND_ATTEMPTS) {
@@ -626,9 +628,17 @@ export function createQqStore({
           const ready = (entry) =>
             (entry.status === "pending" && entry.nextAttemptAt <= now)
             || (entry.status === "sending" && (!Number.isFinite(entry.leaseUntil) || entry.leaseUntil <= now || !processIsAlive(entry.leasePid)));
-          const item = state.notifications.find((entry) => entry.kind !== LIBRARY_NOTIFICATION && ready(entry))
-            ?? state.notifications.find(ready);
+          const seen = new Set(busyUsers);
+          let item;
+          for (const entry of state.notifications) {
+            if (!["pending", "sending"].includes(entry.status) || seen.has(entry.userId)) continue;
+            seen.add(entry.userId);
+            if (!ready(entry)) continue;
+            item ??= entry;
+            if (entry.kind !== LIBRARY_NOTIFICATION) { item = entry; break; }
+          }
           if (!item) return { item: null, exhausted };
+          busyUsers.add(item.userId);
           item.status = "sending";
           item.attempts += 1;
           item.attemptToken = randomBytes(16).toString("hex");
@@ -637,11 +647,11 @@ export function createQqStore({
           item.updatedAt = now;
           return { item: { ...item }, exhausted };
         });
-        if (!reservation) break;
+        if (!reservation) return null;
         counts.failed += reservation.exhausted;
-        if (!reservation.item) break;
-        const reservedItem = reservation.item;
-
+        return reservation.item;
+      }
+      async function deliver(reservedItem) {
         let allowed;
         try {
           allowed = (reservedItem.kind === LIBRARY_NOTIFICATION || await accountExists(reservedItem.accountId))
@@ -649,7 +659,7 @@ export function createQqStore({
         } catch (error) {
           const result = await finishAttempt(reservedItem.id, reservedItem.attemptToken, error);
           if (result) counts[result] += 1;
-          continue;
+          return;
         }
         if (!allowed) {
           await transact((state) => {
@@ -664,7 +674,7 @@ export function createQqStore({
             }
           });
           counts.skipped += 1;
-          continue;
+          return;
         }
 
         let deliveryError = null;
@@ -683,6 +693,17 @@ export function createQqStore({
         const result = await finishAttempt(reservedItem.id, reservedItem.attemptToken, deliveryError);
         if (result) counts[result] += 1;
       }
+      async function runSender() {
+        while (!signal?.aborted) {
+          const item = await reserveNext();
+          if (!item) return;
+          try { await deliver(item); }
+          finally { busyUsers.delete(item.userId); }
+        }
+      }
+      const results = await Promise.allSettled(Array.from({ length: concurrency }, () => runSender()));
+      const failure = results.find((result) => result.status === "rejected");
+      if (failure) throw failure.reason;
     } finally {
       try {
         if (acquired) await transact((state) => {

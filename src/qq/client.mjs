@@ -45,18 +45,18 @@ export class QqClient {
     } catch {
       throw new QqApiError({ retryable: true });
     }
+    const retryHeader = response.headers.get("retry-after");
+    const seconds = retryHeader == null ? NaN : Number(retryHeader);
+    const retryAfterMs = Number.isFinite(seconds)
+      ? Math.max(0, seconds * 1000)
+      : Math.max(0, (Date.parse(retryHeader ?? "") || this.now()) - this.now());
     try {
       data = await response.json();
     } catch {
-      throw new QqApiError({ status: response.status, retryable: response.status === 429 || response.status >= 500 });
+      throw new QqApiError({ status: response.status, retryAfterMs, retryable: response.status === 429 || response.status >= 500 });
     }
     const code = Number(data?.code ?? 0);
     if (!response.ok || code) {
-      const retryHeader = response.headers.get("retry-after");
-      const seconds = retryHeader == null ? NaN : Number(retryHeader);
-      const retryAfterMs = Number.isFinite(seconds)
-        ? Math.max(0, seconds * 1000)
-        : Math.max(0, (Date.parse(retryHeader ?? "") || this.now()) - this.now());
       throw new QqApiError({
         status: response.status, code, retryAfterMs,
         retryable: response.status === 429 || response.status >= 500 || TEMPORARY_ERRORS.has(code)
@@ -121,19 +121,35 @@ export function createPacedSender(client, { intervalMs = 2100, now = Date.now, s
   const timer = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve(); }, ms);
   signal?.addEventListener("abort", onAbort, { once: true });
 }) } = {}) {
-  let nextAt = 0;
-  let tail = Promise.resolve();
+  const recipients = new Map();
   return (userId, content, options) => {
-    const result = tail.catch(() => {}).then(async () => {
+    const requestedAt = now();
+    for (const [id, recipient] of recipients) {
+      if (!recipient.tail && recipient.nextAt <= requestedAt) recipients.delete(id);
+    }
+    const recipient = recipients.get(userId) ?? { nextAt: 0, tail: undefined };
+    recipients.set(userId, recipient);
+    const result = (recipient.tail ?? Promise.resolve()).catch(() => {}).then(async () => {
       if (signal?.aborted) throw new QqApiError({ retryable: true });
-      const delay = Math.max(0, nextAt - now());
+      const delay = Math.max(0, recipient.nextAt - now());
       if (delay) await wait(delay);
-      nextAt = now() + intervalMs;
       if (typeof options?.beforeSend === "function") await options.beforeSend();
       if (signal?.aborted) throw new QqApiError({ retryable: true });
-      return client.sendMessage(userId, content, options);
+      recipient.nextAt = now() + intervalMs;
+      try {
+        return await client.sendMessage(userId, content, options);
+      } catch (error) {
+        if (Number.isFinite(error?.retryAfterMs) && error.retryAfterMs > 0) {
+          recipient.nextAt = Math.max(recipient.nextAt, now() + error.retryAfterMs);
+        }
+        throw error;
+      }
+    }).finally(() => {
+      if (recipient.tail !== result) return;
+      recipient.tail = undefined;
+      if (recipient.nextAt <= now()) recipients.delete(userId);
     });
-    tail = result;
+    recipient.tail = result;
     return result;
   };
 }

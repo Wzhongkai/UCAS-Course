@@ -5,6 +5,37 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createQqStore } from "../src/qq/store.mjs";
 
+test("不同 QQ 并行投递，同一 QQ 的下一条等前一条完成", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "ucas-qq-lanes-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const store = createQqStore({ directory, appId: "lanes" });
+  await store.bindVerified("user-a", "account-a");
+  await store.bindVerified("user-b", "account-b");
+  for (const [content, accountId] of [["a1", "account-a"], ["a2", "account-a"], ["b1", "account-b"]]) {
+    await store.enqueueNotification({ id: content, accountId, content, kind: "success" });
+  }
+  const first = Promise.withResolvers();
+  const firstStarted = Promise.withResolvers();
+  const other = Promise.withResolvers();
+  const delivered = [];
+  const running = store.drainNotifications({ concurrency: 2, send: async (_user, content) => {
+    delivered.push(content);
+    if (content === "a1") { firstStarted.resolve(); await first.promise; }
+    if (content === "b1") other.resolve();
+  } });
+  const deadlineReached = Promise.withResolvers();
+  const deadline = setTimeout(() => deadlineReached.reject(new Error("第二个 QQ 的消息未并行发送")), 3_000);
+  try {
+    await Promise.race([Promise.all([firstStarted.promise, other.promise]), deadlineReached.promise]);
+    assert.deepEqual(delivered.toSorted(), ["a1", "b1"]);
+  } finally {
+    clearTimeout(deadline);
+    first.resolve();
+    await running;
+  }
+  assert.equal(delivered.at(-1), "a2");
+});
+
 test("发送轮次结束后遗留的本进程租约立即恢复，活跃租约仍防止重复发送", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "ucas-qq-orphan-lease-"));
   t.after(() => rm(directory, { recursive: true, force: true }));

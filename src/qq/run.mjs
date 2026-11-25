@@ -25,18 +25,16 @@ if (process.env.QQ_BOT_ENABLED !== "1" || !process.env.QQ_BOT_APP_ID || !process
     const send = createPacedSender(api, { signal: shutdown.signal });
     const libraryQuery = () => fetchLibrarySeats({ signal: shutdown.signal });
     const handleCommand = createCommandHandler({ store, libraryQuery });
-    const pollLibrary = createLibraryPoller({ store, query: libraryQuery, signal: shutdown.signal, log });
     const gateway = createGateway({ api, store, inbox, handleCommand, send, log });
-    let draining = false;
     let stopped = false;
-    let drainTask = Promise.resolve();
+    let drainRequested = false;
+    let drainTask;
     const drain = async () => {
-      if (draining || stopped) return;
-      draining = true;
       try {
         let accounts;
         await store.drainNotifications({
           signal: shutdown.signal,
+          concurrency: 4,
           accountExists: async (id) => {
             accounts ??= new Set((await readPublicSettings()).accounts.map((account) => account.id));
             return accounts.has(id);
@@ -60,9 +58,22 @@ if (process.env.QQ_BOT_ENABLED !== "1" || !process.env.QQ_BOT_APP_ID || !process
         const code = /^[A-Z][A-Z0-9_]{1,31}$/.test(error?.code ?? "") ? `（${error.code}）` : "";
         log(`通知队列处理失败${code}，稍后重试`);
       }
-      finally { draining = false; }
     };
-    const timer = setInterval(() => { if (!draining && !stopped) drainTask = drain(); }, 3000);
+    function requestDrain() {
+      if (stopped) return;
+      drainRequested = true;
+      drainTask ??= (async () => {
+        while (drainRequested && !stopped) {
+          drainRequested = false;
+          await drain();
+        }
+      })().finally(() => {
+        drainTask = undefined;
+        if (drainRequested) requestDrain();
+      });
+    }
+    const timer = setInterval(() => { if (!drainTask) requestDrain(); }, 3000);
+    const pollLibrary = createLibraryPoller({ store, query: libraryQuery, signal: shutdown.signal, onQueued: requestDrain, log });
     let libraryTask = pollLibrary();
     const libraryTimer = setInterval(() => { libraryTask = pollLibrary(); }, LIBRARY_POLL_MS);
     async function stop() {

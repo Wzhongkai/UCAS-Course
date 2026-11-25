@@ -2,7 +2,7 @@ import { card, formatShanghaiTime } from "./format.mjs";
 
 const SEAT_URL = "https://seat.ucasr.cn/api/layout/getremainseat";
 export const SELF_STUDY_AREA = "三层中厅自助学习区";
-export const LIBRARY_POLL_MS = 15_000;
+export const LIBRARY_POLL_MS = 2_000;
 const AREAS = [["三层南区", 0], [SELF_STUDY_AREA, 3], ["二层北区", 4]];
 
 export function validSeatCount(value) {
@@ -37,7 +37,7 @@ export function formatLibraryChange(previous, current, observedAt) {
   ], { icon: "🔔", footer: "不再提醒可发送“关闭订阅”。" });
 }
 
-export function createLibraryPoller({ store, query, signal, log = () => {} }) {
+export function createLibraryPoller({ store, query, signal, onQueued = () => {}, log = () => {} }) {
   let inFlight;
   let failed = false;
   return function poll() {
@@ -47,7 +47,8 @@ export function createLibraryPoller({ store, query, signal, log = () => {} }) {
         if (!await store.hasLibrarySubscriptions() || signal?.aborted) return;
         const { counts, observedAt } = await query();
         if (signal?.aborted) return;
-        await store.observeLibrarySeats(counts[SELF_STUDY_AREA], observedAt);
+        const queued = await store.observeLibrarySeats(counts[SELF_STUDY_AREA], observedAt);
+        if (queued > 0 && !signal?.aborted) onQueued();
         failed = false;
       } catch {
         if (!failed && !signal?.aborted) log("图书馆余座监测暂时失败，保留上次结果并稍后重试");

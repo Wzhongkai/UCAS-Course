@@ -70,8 +70,12 @@ test("轮询仅在有订阅时请求，重启后保留基准，失败和未变�
   assert.equal(calls, 1);
   assert.equal((await store.getSummary()).pending, 0);
   const restarted = open();
-  const poll = createLibraryPoller({ store: restarted, query });
-  for (let index = 0; index < 4; index++) await poll();
+  let wakeups = 0;
+  const poll = createLibraryPoller({ store: restarted, query, onQueued: () => { wakeups += 1; } });
+  for (const expectedWakeups of [0, 1, 1, 2]) {
+    await poll();
+    assert.equal(wakeups, expectedWakeups);
+  }
   const deliveries = [];
   const result = await restarted.drainNotifications({
     accountExists: () => { throw new Error("Library must not check course accounts"); },

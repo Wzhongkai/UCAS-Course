@@ -81,18 +81,18 @@ test("token 到期前刷新，网关不能把 token 发送到第三方主机", a
   await assert.rejects(client.getGateway(), QqApiError);
 });
 
-test("发送限速串行化，前一次失败不阻断后续消息", async () => {
+test("同一 QQ 保持发送间隔，另一个 QQ 无需等前一条消息", async () => {
   let clock = 0;
   const times = [];
-  const sender = createPacedSender({ sendMessage: async (user) => {
-    times.push(clock);
-    if (user === "bad") throw new Error("test");
-    return user;
+  const sender = createPacedSender({ sendMessage: async (user, content) => {
+    times.push([user, clock]);
+    if (content === "bad") throw new Error("test");
+    return content;
   } }, { intervalMs: 2100, now: () => clock, wait: async (ms) => { clock += ms; } });
-  const results = await Promise.allSettled([sender("bad", "x"), sender("good", "x"), sender("last", "x")]);
+  const results = await Promise.allSettled([sender("first", "bad"), sender("other", "good"), sender("first", "last")]);
   assert.equal(results[0].status, "rejected");
   assert.equal(results[2].value, "last");
-  assert.deepEqual(times, [0, 2100, 4200]);
+  assert.deepEqual(times, [["first", 0], ["other", 0], ["first", 2100]]);
 });
 
 test("排队期间撤回授权后，在实际 HTTP 发送前再次检查并停止投递", async () => {
@@ -102,7 +102,7 @@ test("排队期间撤回授权后，在实际 HTTP 发送前再次检查并停�
     intervalMs: 100, now: () => 0, wait: async () => { allowed = false; }
   });
   await sender("first", "x");
-  await assert.rejects(sender("revoked", "x", { beforeSend: async () => {
+  await assert.rejects(sender("first", "x", { beforeSend: async () => {
     if (!allowed) throw new Error("revoked");
   } }), /revoked/);
   assert.deepEqual(sent, ["first"]);
